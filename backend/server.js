@@ -102,6 +102,9 @@ app.use('/uploads', (req, res, next) => {
   next();
 }, express.static(path.join(__dirname, 'uploads')));
 
+// Health check endpoint (for Render)
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URL || 'mongodb://localhost:27017/allinone')
   .then(() => console.log('✅ MongoDB Connected'))
