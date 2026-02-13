@@ -107,7 +107,7 @@ const Login = () => {
       }
     } catch (err) {
       console.error('Login Error:', err);
-      setError("Backend server start nahi hai! Terminal mein 'node server.js' chalayein.");
+      setError("Server se connect nahi ho paa raha. Please wait 30 seconds and try again.");
     }
   };
 
