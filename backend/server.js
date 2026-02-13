@@ -37,9 +37,12 @@ app.use((req, res, next) => {
 });
 
 // Middleware
-const allowedOrigins = process.env.FRONTEND_URL 
-  ? [process.env.FRONTEND_URL, "http://localhost:5173", "http://localhost:5174"]
-  : ["http://localhost:5173", "http://localhost:5174"];
+const allowedOrigins = [
+  "https://skillnix-ats-frontend.onrender.com",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  process.env.FRONTEND_URL
+].filter(Boolean);
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 // JSON parsing with limit
 app.use(express.json({ limit: '100mb' }));
