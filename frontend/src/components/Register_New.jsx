@@ -2,9 +2,11 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import API_URL from '../config';
+import { useToast } from './Toast';
 
 const Register = () => {
   const navigate = useNavigate();
+  const toast = useToast();
 
   // 1. State banaya data store karne ke liye
   const [formData, setFormData] = useState({
@@ -130,7 +132,7 @@ const Register = () => {
       const data = await response.json();
 
       if (response.ok) {
-        alert('Registration Successful! Redirecting to Login...');
+        toast.success('Registration Successful! Redirecting to Login...');
         navigate('/login');
       } else {
         setError(data.message || 'Registration failed');

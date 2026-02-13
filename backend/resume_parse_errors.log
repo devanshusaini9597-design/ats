@@ -1,0 +1,11 @@
+2026-02-12T05:06:00.893Z - TypeError: pdfParse is not a function
+    at parseResume (D:\PeopleConnectHR\skillnix-pchr\backend\services\resumeParser.js:46:24)
+    at D:\PeopleConnectHR\skillnix-pchr\backend\routes\candidateRoutes.js:401:30
+    at Layer.handle [as handle_request] (D:\PeopleConnectHR\skillnix-pchr\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (D:\PeopleConnectHR\skillnix-pchr\backend\node_modules\express\lib\router\route.js:149:13)
+    at done (D:\PeopleConnectHR\skillnix-pchr\backend\node_modules\multer\lib\make-middleware.js:59:7)
+    at indicateDone (D:\PeopleConnectHR\skillnix-pchr\backend\node_modules\multer\lib\make-middleware.js:63:68)
+    at Multipart.<anonymous> (D:\PeopleConnectHR\skillnix-pchr\backend\node_modules\multer\lib\make-middleware.js:187:7)
+    at Multipart.emit (node:events:518:28)
+    at emitCloseNT (node:internal/streams/destroy:148:10)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)

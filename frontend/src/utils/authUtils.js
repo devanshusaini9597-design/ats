@@ -4,6 +4,7 @@ export const handleLogout = (navigate) => {
   localStorage.removeItem('token');
   localStorage.removeItem('isLoggedIn');
   localStorage.removeItem('userEmail');
+  localStorage.removeItem('userName');
   
   // Redirect to login page
   navigate('/login');

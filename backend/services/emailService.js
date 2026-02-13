@@ -1,25 +1,25 @@
 const nodemailer = require('nodemailer');
+const mongoose = require('mongoose');
 
-// Create transporter using Gmail SMTP or custom SMTP
-let transporter;
+// ─── Default (global) transporter from .env ───
+let defaultTransporter;
 
 const initializeTransporter = () => {
   const emailProvider = process.env.EMAIL_PROVIDER || 'gmail';
   
   if (emailProvider === 'gmail') {
-    transporter = nodemailer.createTransport({
+    defaultTransporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
         user: process.env.GMAIL_EMAIL,
-        pass: process.env.GMAIL_APP_PASSWORD // Use App Password, not regular password
+        pass: process.env.GMAIL_APP_PASSWORD
       }
     });
   } else {
-    // Generic SMTP configuration
-    transporter = nodemailer.createTransport({
+    defaultTransporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
       port: process.env.SMTP_PORT || 587,
-      secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+      secure: process.env.SMTP_SECURE === 'true',
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
@@ -33,15 +33,83 @@ const initializeTransporter = () => {
   });
 };
 
-// Initialize on module load
 initializeTransporter();
 
-// Generic email sender with BCC and CC support
+// ─── Get per-user transporter (NO global fallback) ───
+const getUserTransporter = async (userId) => {
+  try {
+    if (!userId) return { transporter: null, fromEmail: null, userName: '', configured: false };
+    
+    const User = mongoose.model('User');
+    const user = await User.findById(userId).select('emailSettings name email');
+    
+    if (!user?.emailSettings?.isConfigured || !user.emailSettings.smtpEmail || !user.emailSettings.smtpAppPassword) {
+      return { transporter: null, fromEmail: null, userName: user?.name || '', configured: false };
+    }
+
+    const s = user.emailSettings;
+    let userTransporter;
+    
+    // Known providers with service shortcuts
+    const serviceProviders = { gmail: 'gmail', yahoo: 'Yahoo', outlook: 'Outlook365' };
+    // Known providers with explicit SMTP host
+    const hostProviders = {
+      zoho:      { host: 'smtp.zoho.com',            port: 587 },
+      hostinger: { host: 'smtp.hostinger.com',        port: 587 },
+      godaddy:   { host: 'smtpout.secureserver.net',  port: 465 },
+      namecheap: { host: 'mail.privateemail.com',     port: 587 },
+    };
+
+    const provider = s.smtpProvider || 'gmail';
+
+    if (serviceProviders[provider]) {
+      userTransporter = nodemailer.createTransport({
+        service: serviceProviders[provider],
+        auth: { user: s.smtpEmail, pass: s.smtpAppPassword }
+      });
+    } else if (hostProviders[provider]) {
+      const hp = hostProviders[provider];
+      userTransporter = nodemailer.createTransport({
+        host: hp.host,
+        port: hp.port,
+        secure: hp.port === 465,
+        auth: { user: s.smtpEmail, pass: s.smtpAppPassword }
+      });
+    } else {
+      // Custom SMTP
+      const port = s.smtpPort || 587;
+      userTransporter = nodemailer.createTransport({
+        host: s.smtpHost,
+        port: port,
+        secure: port === 465,
+        auth: { user: s.smtpEmail, pass: s.smtpAppPassword }
+      });
+    }
+
+    return { transporter: userTransporter, fromEmail: s.smtpEmail, userName: user.name || '', configured: true };
+  } catch (err) {
+    console.error('getUserTransporter error:', err.message);
+    return { transporter: null, fromEmail: null, userName: '', configured: false };
+  }
+};
+
+// Generic email sender — uses per-user transporter if userId provided
 const sendEmail = async (to, subject, htmlBody, textBody, options = {}) => {
-  const { cc, bcc } = options;
+  const { cc, bcc, senderName, senderEmail, userId } = options;
+  
+  // Get the right transporter (user-specific only — no global fallback)
+  const { transporter: activeTransporter, fromEmail, userName, configured } = await getUserTransporter(userId);
+  
+  if (!configured || !activeTransporter) {
+    throw new Error('EMAIL_NOT_CONFIGURED');
+  }
+  
+  // Build "from" with display name
+  const displayName = senderName || userName || '';
+  const fromAddress = displayName ? `"${displayName}" <${fromEmail}>` : fromEmail;
   
   const mailOptions = {
-    from: process.env.FROM_EMAIL || process.env.GMAIL_EMAIL,
+    from: fromAddress,
     to: Array.isArray(to) ? to : [to],
     subject: subject,
     html: htmlBody,
@@ -59,8 +127,8 @@ const sendEmail = async (to, subject, htmlBody, textBody, options = {}) => {
   }
 
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Email sent to ${Array.isArray(to) ? to.join(', ') : to}`);
+    const info = await activeTransporter.sendMail(mailOptions);
+    console.log(`✅ Email sent to ${Array.isArray(to) ? to.join(', ') : to} (from: ${fromEmail})`);
     if (cc) console.log(`   CC: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
     if (bcc) console.log(`   BCC: ${Array.isArray(bcc) ? bcc.join(', ') : bcc}`);
     return { success: true, email: to, messageId: info.messageId };
@@ -68,6 +136,7 @@ const sendEmail = async (to, subject, htmlBody, textBody, options = {}) => {
     console.error('❌ Email Error:', {
       message: error.message,
       email: to,
+      from: fromEmail,
       cc: options.cc,
       bcc: options.bcc
     });
@@ -205,6 +274,18 @@ const sendBulkEmails = async (recipients, subject, htmlBody, textBody, options =
   return results;
 };
 
+// Check if a user has email configured (for pre-flight checks)
+const checkUserEmailConfigured = async (userId) => {
+  try {
+    if (!userId) return false;
+    const User = mongoose.model('User');
+    const user = await User.findById(userId).select('emailSettings');
+    return !!(user?.emailSettings?.isConfigured && user.emailSettings.smtpEmail && user.emailSettings.smtpAppPassword);
+  } catch {
+    return false;
+  }
+};
+
 module.exports = {
   sendEmail,
   sendInterviewEmail,
@@ -212,5 +293,7 @@ module.exports = {
   sendDocumentEmail,
   sendOnboardingEmail,
   sendCustomEmail,
-  sendBulkEmails
+  sendBulkEmails,
+  checkUserEmailConfigured,
+  getUserTransporter
 };

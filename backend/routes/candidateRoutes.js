@@ -73,7 +73,15 @@ const memoryUpload = multer({
     limits: { fileSize: 100 * 1024 * 1024 } // 100MB
 });
 const diskUpload = multer({ 
-    dest: 'uploads/',
+    storage: multer.diskStorage({
+        destination: 'uploads/',
+        filename: (req, file, cb) => {
+            // Keep original extension for proper MIME type serving
+            const ext = path.extname(file.originalname) || '.pdf';
+            const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + ext;
+            cb(null, uniqueName);
+        }
+    }),
     limits: { fileSize: 100 * 1024 * 1024 } // 100MB
 });
 
@@ -119,9 +127,8 @@ router.get('/', async (req, res) => {
         // Detect if ANY filter is active
         const hasAnyFilter = search || position || location || companyName || hasRangeFilter;
 
-        // Build MongoDB filter - only apply basic filters here
-        const filter = {};
-        // Note: When ANY filter is active, we fetch ALL data and filter in JavaScript
+        // Build MongoDB filter - ALWAYS scope by the logged-in user
+        const filter = { createdBy: req.user.id };
 
         // Fetch candidates - if ANY filter is active, get ALL candidates without pagination limit
         let candidatesQuery = Candidate.find(filter)
@@ -390,33 +397,88 @@ router.post('/bulk-upload', diskUpload.single('file'), (req, res, next) => {
     next();
 }, candidateController.bulkUploadCandidates);
 
-// --- 5. RESUME PARSING LOGIC ---
+// --- 5. RESUME PARSING LOGIC (Enhanced Enterprise Version) ---
+const { parseResume } = require('../services/resumeParser');
+const fs = require('fs');
 router.post('/parse-logic', memoryUpload.single('resume'), async (req, res) => {
-    const pdfParse = require('pdf-parse');
     try {
         if (!req.file) return res.status(400).json({ message: "File missing" });
-        const data = await pdfParse(req.file.buffer);
-        const text = data.text;
-        const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        const phoneMatch = text.match(/(\+?\d{1,3}[- ]?)?\d{10}/);
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
-        res.json({
-            name: lines[0] || "",
-            email: emailMatch ? emailMatch[0] : "",
-            contact: phoneMatch ? phoneMatch[0] : ""
-        });
+
+        const mimetype = req.file.mimetype;
+        const buffer = req.file.buffer;
+        const filename = req.file.originalname || '';
+
+        console.log(`🔍 Parsing resume: ${filename} (${mimetype})`);
+
+        const parsed = await parseResume(buffer, mimetype, filename);
+
+        // Enhanced response with confidence scores and metadata
+        const response = {
+            success: true,
+            name: parsed.name,
+            email: parsed.email,
+            contact: parsed.contact,
+            position: parsed.position,
+            company: parsed.company,
+            experience: parsed.experience,
+            location: parsed.location,
+            skills: parsed.skills,
+            education: parsed.education,
+            parsed: parsed,
+            confidence: parsed.confidence,
+            metadata: {
+                filename,
+                mimetype,
+                parsedAt: new Date().toISOString(),
+                extractedFields: Object.keys(parsed).filter(k => parsed[k] && k !== 'confidence'),
+                averageConfidence: parsed.confidence ? Object.values(parsed.confidence).reduce((a, b) => a + b, 0) / Object.keys(parsed.confidence).length : 0
+            }
+        };
+
+        console.log(`✅ Resume parsed successfully: ${response.metadata.extractedFields.length} fields extracted`);
+        res.json(response);
+
     } catch (err) {
-        res.status(500).json({ error: "Failed to parse" });
+        // Enterprise-grade error logging with more details
+        const errorLog = `${new Date().toISOString()} - ${req.file?.originalname || 'unknown'} - ${err.stack}\n`;
+        fs.appendFile('backend/resume_parse_errors.log', errorLog, () => {});
+
+        console.error('❌ Resume parsing error:', {
+            filename: req.file?.originalname,
+            mimetype: req.file?.mimetype,
+            error: err.message
+        });
+
+        res.status(500).json({
+            error: 'Resume parsing failed',
+            details: err.message,
+            filename: req.file?.originalname,
+            suggestion: 'Try uploading a PDF, DOC, DOCX, TXT, or RTF file with clear text content'
+        });
     }
 });
 
 // --- 6. EMAIL CHECK ---
 router.get('/check-email/:email', async (req, res) => {
     try {
-        const existing = await Candidate.findOne({ email: req.params.email });
+        const existing = await Candidate.findOne({ email: req.params.email, createdBy: req.user.id });
         res.status(200).json({ exists: !!existing });
     } catch (err) {
         res.status(500).json({ message: "Server error" });
+    }
+});
+
+// --- 6.5 GET SINGLE CANDIDATE BY ID ---
+router.get('/:id', async (req, res) => {
+    try {
+        const candidate = await Candidate.findOne({ _id: req.params.id, createdBy: req.user.id });
+        if (!candidate) {
+            return res.status(404).json({ message: 'Candidate not found' });
+        }
+        res.status(200).json(candidate);
+    } catch (err) {
+        console.error('Error fetching candidate:', err);
+        res.status(500).json({ message: 'Server error' });
     }
 });
 
@@ -427,10 +489,11 @@ router.put('/:id', diskUpload.single('resume'), candidateController.updateCandid
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const deletedCandidate = await Candidate.findByIdAndDelete(id);
+        // Only delete if candidate belongs to the logged-in user
+        const deletedCandidate = await Candidate.findOneAndDelete({ _id: id, createdBy: req.user.id });
 
         if (!deletedCandidate) {
-            return res.status(404).json({ success: false, message: "Candidate not found" });
+            return res.status(404).json({ success: false, message: "Candidate not found or access denied" });
         }
 
         res.status(200).json({ success: true, message: "Candidate deleted successfully" });
@@ -442,8 +505,8 @@ router.delete('/:id', async (req, res) => {
 // --- 8B. CLEAR ALL CANDIDATES (DANGER: Deletes entire database) ---
 router.delete('/clear-all/now', async (req, res) => {
     try {
-        console.log('⚠️  DANGER: Clearing ALL candidates from database...');
-        const result = await Candidate.deleteMany({});
+        console.log('⚠️  Clearing all candidates for user:', req.user.id);
+        const result = await Candidate.deleteMany({ createdBy: req.user.id });
         
         res.status(200).json({ 
             success: true, 
@@ -461,7 +524,7 @@ router.delete('/clear-all/now', async (req, res) => {
 // --- 9. DATA QUALITY ANALYSIS REPORT (CORRECT DATA ONLY) ---
 router.get('/analytics/data-quality', async (req, res) => {
     try {
-        const allCandidates = await Candidate.find({}).lean();
+        const allCandidates = await Candidate.find({ createdBy: req.user.id }).lean();
         const totalRecords = allCandidates.length;
 
         if (totalRecords === 0) {

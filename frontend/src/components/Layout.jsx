@@ -1,13 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Sidebar from './Sidebar';
 import Header from './Header';
 
 const Layout = ({ children, sidebarActions = {} }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  useEffect(() => {
-    console.log('📍 Layout received sidebarActions:', sidebarActions);
-  }, [sidebarActions]);
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">

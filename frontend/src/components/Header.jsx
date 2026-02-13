@@ -1,16 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Menu, Bell, Search, ChevronDown, User, LogOut } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { handleLogout } from '../utils/authUtils';
+import { useToast } from './Toast';
+import NotificationBell from './NotificationBell';
 
 const Header = ({ setSidebarOpen, sidebarOpen }) => {
+  const navigate = useNavigate();
+  const toast = useToast();
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [notifications] = useState([
-    { id: 1, message: '3 candidates waiting for review', time: '5 min ago', read: false },
-    { id: 2, message: 'New job posting approved', time: '1 hour ago', read: true },
-    { id: 3, message: 'Import completed - 48 records', time: '2 hours ago', read: true }
-  ]);
-  const [showNotifications, setShowNotifications] = useState(false);
 
-  const unreadCount = notifications.filter(n => !n.read).length;
+  // Get user info from localStorage
+  const userEmail = localStorage.getItem('userEmail') || 'User';
+  const userName = localStorage.getItem('userName') || '';
+  const displayName = userName || (userEmail.includes('@') ? userEmail.split('@')[0] : userEmail);
+  const initials = (userName ? userName.split(' ').map(w => w[0]).join('').slice(0, 2) : displayName.slice(0, 2)).toUpperCase();
 
   return (
     <header className="sticky top-0 z-20 bg-white border-b border-gray-200 transition-all duration-300">
@@ -41,54 +45,7 @@ const Header = ({ setSidebarOpen, sidebarOpen }) => {
         {/* Right Section */}
         <div className="flex items-center gap-1 sm:gap-3 flex-shrink-0">
           {/* Notifications */}
-          <div className="relative">
-            <button
-              onClick={() => setShowNotifications(!showNotifications)}
-              className="relative p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              title="Notifications"
-            >
-              <Bell size={20} className="text-gray-600" />
-              {unreadCount > 0 && (
-                <span className="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold">
-                  {unreadCount}
-                </span>
-              )}
-            </button>
-
-            {/* Notifications Dropdown */}
-            {showNotifications && (
-              <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden z-50">
-                <div className="px-4 py-3 border-b border-gray-200 font-semibold text-gray-900">
-                  Notifications
-                </div>
-                <div className="max-h-64 overflow-y-auto">
-                  {notifications.map((notif) => (
-                    <div
-                      key={notif.id}
-                      className={`px-4 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors ${
-                        !notif.read ? 'bg-blue-50' : ''
-                      }`}
-                    >
-                      <div className="flex items-start gap-2">
-                        {!notif.read && (
-                          <div className="w-2 h-2 bg-blue-600 rounded-full mt-2 flex-shrink-0" />
-                        )}
-                        <div className="flex-1">
-                          <p className="text-sm text-gray-900">{notif.message}</p>
-                          <p className="text-xs text-gray-500 mt-1">{notif.time}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="px-4 py-3 border-t border-gray-200 text-center">
-                  <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-                    View All
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          <NotificationBell />
 
           {/* User Profile Dropdown */}
           <div className="relative">
@@ -98,31 +55,31 @@ const Header = ({ setSidebarOpen, sidebarOpen }) => {
               title="User menu"
             >
               <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
-                JD
+                {initials}
               </div>
-              <span className="hidden sm:inline text-sm font-medium text-gray-700">John Doe</span>
+              <span className="hidden sm:inline text-sm font-medium text-gray-700">Hi, {displayName}</span>
               <ChevronDown size={16} className="text-gray-600 hidden sm:inline" />
             </button>
 
             {/* User Menu Dropdown */}
             {showUserMenu && (
-              <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden z-50">
+              <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden z-50">
                 <div className="px-4 py-3 border-b border-gray-200">
-                  <p className="text-sm font-medium text-gray-900">John Doe</p>
-                  <p className="text-xs text-gray-500">john.doe@example.com</p>
+                  <p className="text-sm font-medium text-gray-900">{displayName}</p>
+                  <p className="text-xs text-gray-500">{userEmail}</p>
                 </div>
                 <div className="py-1">
-                  <button className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors">
+                  <button onClick={() => { toast.info('Feature Coming Soon'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors cursor-pointer">
                     <User size={16} />
                     My Profile
                   </button>
-                  <button className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors">
+                  <button onClick={() => { toast.info('Feature Coming Soon'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors cursor-pointer">
                     <span>⚙️</span>
                     Settings
                   </button>
                 </div>
                 <div className="border-t border-gray-200 py-1">
-                  <button className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors">
+                  <button onClick={() => handleLogout(navigate)} className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors cursor-pointer">
                     <LogOut size={16} />
                     Logout
                   </button>
@@ -132,6 +89,7 @@ const Header = ({ setSidebarOpen, sidebarOpen }) => {
           </div>
         </div>
       </div>
+
     </header>
   );
 };

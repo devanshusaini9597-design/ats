@@ -46,6 +46,7 @@ export const useParsing = (fetchCandidates) => {
 
     return {
         selectedIds,
+        setSelectedIds,
         isParsing,
         toggleSelection,
         selectAll,

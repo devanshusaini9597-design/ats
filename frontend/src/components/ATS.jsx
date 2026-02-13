@@ -4,7 +4,7 @@ import axios from 'axios';
 import * as XLSX from 'xlsx';
 import { 
   Plus, Search, Mail, MessageCircle,Upload, 
-  Filter, CheckSquare, Square, FileText, Cpu, Trash2, Edit, X, Briefcase,BarChart3, AlertCircle, RefreshCw, Download 
+  Filter, CheckSquare, Square, FileText, Cpu, Trash2, Edit, X, Briefcase,BarChart3, AlertCircle, RefreshCw, Download, Eye, Info 
 } from 'lucide-react';
 import { useParsing } from '../hooks/useParsing';
 import PhoneInput from 'react-phone-input-2';
@@ -13,10 +13,13 @@ import { useNavigate } from 'react-router-dom';
 import BASE_API_URL from '../config';
 import ColumnMapper from './ColumnMapper';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
+import useCountries from '../utils/useCountries';
+import { useToast } from './Toast';
 
 
 const ATS = forwardRef((props, ref) => {
   const navigate = useNavigate();
+  const toast = useToast();
   const fileInputRef = useRef(null);
   const autoUploadInputRef = useRef(null);
   const { onImportComplete } = props || {};
@@ -35,7 +38,10 @@ const ATS = forwardRef((props, ref) => {
   const [showModal, setShowModal] = useState(false);
   const [editId, setEditId] = useState(null);
   const [parsedResults, setParsedResults] = useState([]); 
-  const [showPreview, setShowPreview] = useState(false); 
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewResumeUrl, setPreviewResumeUrl] = useState(null);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isAutoParsing, setIsAutoParsing] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -56,6 +62,22 @@ const ATS = forwardRef((props, ref) => {
   const [emailCC, setEmailCC] = useState('');
   const [emailBCC, setEmailBCC] = useState('');
   
+  // Quick Send editable fields
+  const [quickName, setQuickName] = useState('');
+  const [quickPosition, setQuickPosition] = useState('');
+  const [quickDepartment, setQuickDepartment] = useState('');
+  const [quickJoiningDate, setQuickJoiningDate] = useState('');
+  const [showQuickPreview, setShowQuickPreview] = useState(false);
+  const [quickPreviewHtml, setQuickPreviewHtml] = useState('');
+  const [quickPreviewSubject, setQuickPreviewSubject] = useState('');
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  
+  // Template-based email states
+  const [emailTemplates, setEmailTemplates] = useState([]);
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [templateVars, setTemplateVars] = useState({});
+  const [emailMode, setEmailMode] = useState('template'); // 'template' or 'quick'
+  
   // Bulk Email Workflow States
   const [bulkEmailStep, setBulkEmailStep] = useState(null); // null, 'select', 'confirm', 'sending', 'results'
   const [selectedEmails, setSelectedEmails] = useState(new Set());
@@ -65,7 +87,7 @@ const ATS = forwardRef((props, ref) => {
   const [duplicateRecords, setDuplicateRecords] = useState([]);
   const [showCorrectionsModal, setShowCorrectionsModal] = useState(false);
   const [correctionRecords, setCorrectionRecords] = useState([]);
-  const [showOnlyCorrect, setShowOnlyCorrect] = useState(true); // ✅ DEFAULT: Show ONLY properly filled records
+  const [showOnlyCorrect, setShowOnlyCorrect] = useState(false); // Show all records by default
   const [totalRecordsInDB, setTotalRecordsInDB] = useState(0);
 
   // ✅ NEW: Review & Fix Workflow
@@ -94,9 +116,87 @@ const ATS = forwardRef((props, ref) => {
     srNo: '', date: new Date().toISOString().split('T')[0], location: '', position: '',
     fls: '', name: '', contact: '', email: '', companyName: '', experience: '',
     ctc: '', expectedCtc: '', noticePeriod: '', status: 'Applied', client: '',
-    spoc: '', source: '', resume: null, callBackDate: ''
+    spoc: '', source: '', resume: null, callBackDate: '', remark: ''
 };
   const [formData, setFormData] = useState(initialFormState);
+  const [formErrors, setFormErrors] = useState({});
+
+  // Refs for step-by-step validation focus
+  const fieldRefs = {
+    name: useRef(null),
+    email: useRef(null),
+    contact: useRef(null),
+    ctc: useRef(null),
+    position: useRef(null),
+    companyName: useRef(null),
+    location: useRef(null),
+    spoc: useRef(null),
+  };
+
+  // Master data for dropdowns (matching AddCandidatePage)
+  const [masterPositions, setMasterPositions] = useState([]);
+  const [masterCompanies, setMasterCompanies] = useState([]);
+  const [masterClients, setMasterClients] = useState([]);
+  const [masterSources, setMasterSources] = useState([]);
+  const [countryCode, setCountryCode] = useState('+91');
+  const countryCodes = useCountries();
+  const ctcRanges = ['0-50k', '50k-1L', '1L-1.5L', '1.5L-2L', '2L-2.5L', '2.5L-3L', '3L-3.5L', '3.5L-4L', '4L-4.5L', '4.5L-5L', '5L-5.5L', '5.5L-6L', '6L-8L', '8L-9L', '9L-10L', 'Above 10L'];
+
+  // Fetch master data for modal dropdowns
+  useEffect(() => {
+    const fetchMasterData = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const [positionsRes, companiesRes, clientsRes, sourcesRes] = await Promise.all([
+          fetch(`${BASE_API_URL}/api/positions`, { headers }),
+          fetch(`${BASE_API_URL}/api/companies`, { headers }),
+          fetch(`${BASE_API_URL}/api/clients`, { headers }),
+          fetch(`${BASE_API_URL}/api/sources`, { headers })
+        ]);
+        if (positionsRes.ok) setMasterPositions(await positionsRes.json());
+        if (companiesRes.ok) setMasterCompanies(await companiesRes.json());
+        if (clientsRes.ok) setMasterClients(await clientsRes.json());
+        if (sourcesRes.ok) setMasterSources(await sourcesRes.json());
+      } catch (error) {
+        console.error('Error fetching master data:', error);
+      }
+    };
+    fetchMasterData();
+  }, []);
+
+  // --- Resume Preview with Blob URL (fixes cross-origin + extensionless files) ---
+  const handleResumePreview = async (resumePath) => {
+    const url = resumePath.startsWith('http') ? resumePath : `${BASE_API_URL}${resumePath}`;
+    setPreviewResumeUrl(url);
+    setIsPreviewLoading(true);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Failed to fetch resume');
+      const blob = await response.blob();
+      // Detect PDF from magic bytes if MIME type is wrong
+      let type = blob.type;
+      if (type === 'application/octet-stream' || !type) {
+        const header = await blob.slice(0, 5).text();
+        if (header.startsWith('%PDF')) type = 'application/pdf';
+      }
+      const typedBlob = new Blob([blob], { type: type || 'application/pdf' });
+      const blobUrl = URL.createObjectURL(typedBlob);
+      setPreviewBlobUrl(blobUrl);
+    } catch (err) {
+      console.error('Resume preview error:', err);
+      toast.error('Failed to preview resume');
+      setPreviewResumeUrl(null);
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  const closeResumePreview = () => {
+    if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+    setPreviewBlobUrl(null);
+    setPreviewResumeUrl(null);
+  };
 
   // --- Data Fetch Logic (with pagination + server-side search) ---
   const fetchData = async (page = 1, options = {}) => {
@@ -106,9 +206,8 @@ const ATS = forwardRef((props, ref) => {
       const position = (options.position || '').trim();
       const isSearch = Boolean(search || position);
       
-      // ✅ FETCH ALL DATA: When showing only correct, fetch everything (12000 covers all data)
-      // Filter on frontend, then paginate to show 50 at a time
-      const limit = (showOnlyCorrect && !isSearch) ? 12000 : 100;
+      // ✅ FETCH ALL DATA: Always load all records so filtering/search works across entire DB
+      const limit = 50000;
       
       setIsLoadingMore(page > 1 && !isSearch);
 
@@ -186,6 +285,7 @@ const ATS = forwardRef((props, ref) => {
         console.log('🎬 openAddCandidateModal called');
         setEditId(null);
         setFormData(initialFormState);
+        setFormErrors({});
         setShowModal(true);
       },
       refreshCandidates: () => {
@@ -203,11 +303,10 @@ const ATS = forwardRef((props, ref) => {
     fetchData(1, { search: '', position: '' });
   }, []); // Empty dependency = mount only
 
-  // ✅ SEARCH/FILTER CHANGES - Re-fetch when search or filters change
+  // ✅ SEARCH/FILTER CHANGES - Reset to page 1 (filtering is all client-side)
   useEffect(() => {
-    console.log('🔍 Search/filter changed - re-fetching data');
-    fetchData(1, { search: searchQuery, position: filterJob });
-  }, [searchQuery, filterJob, isShowingAll, showOnlyCorrect]);
+    setCurrentPage(1);
+  }, [searchQuery, advancedSearchFilters, showOnlyCorrect]);
 
   // ✅ MONITOR REVIEW DATA - When confirmation closes, ensure UI refreshes
   useEffect(() => {
@@ -255,7 +354,7 @@ const handleBulkUpload = async (event) => {
 
         const data = await res.json();
         if (!res.ok || !data.success) {
-            alert("❌ Error reading Excel: " + (data.message || 'Unknown error'));
+            toast.error('Error reading Excel: ' + (data.message || 'Unknown error'));
             event.target.value = null;
             return;
         }
@@ -266,7 +365,7 @@ const handleBulkUpload = async (event) => {
         event.target.value = null;
     } catch (error) {
         console.error("Error reading Excel:", error);
-        alert("❌ Error reading Excel file. Please try again.");
+        toast.error('Error reading Excel file. Please try again.');
         event.target.value = null;
       } finally {
         setIsHeaderLoading(false);
@@ -391,10 +490,10 @@ const handleAutoUpload = async (event) => {
             setShowReviewModal(true);
             
             console.log(`📊 Validation Complete: ${data.stats.ready} ready, ${data.stats.review} review, ${data.stats.blocked} blocked`);
-            alert(`✅ VALIDATION COMPLETE!\n\n✅ Ready: ${data.stats.ready}\n⚠️  Need Review: ${data.stats.review}\n❌ Blocked: ${data.stats.blocked}\n\nReview and fix data in the modal.`);
+            toast.success(`Validation complete! Ready: ${data.stats.ready}, Review: ${data.stats.review}, Blocked: ${data.stats.blocked}`);
         } else if (data.success && data.imported) {
             // ❌ Older backend version still running - it auto-imported instead of returning results
-            alert(`⚠️  Backend version mismatch!\n\nThe backend is still running the old auto-import code.\n\n📍 SOLUTION:\n1. Close/stop the backend terminal\n2. Restart: cd backend && node server.js\n3. Try upload again\n\nImported ${data.imported} records. Will show review modal after restart.`);
+            toast.warning(`Backend version mismatch! Restart backend and try again. Imported ${data.imported} records.`);
             setIsUploading(false);
             return;
         } else {
@@ -404,7 +503,7 @@ const handleAutoUpload = async (event) => {
         setIsUploading(false);
     } catch (error) {
         console.error("❌ Auto Upload Error:", error);
-        alert("❌ Error: " + error.message);
+        toast.error('Error: ' + error.message);
         setIsUploading(false);
     } finally {
         event.target.value = null;
@@ -493,9 +592,9 @@ const handleUploadWithMapping = async (mapping) => {
                       const duplicateCount = (msg.duplicatesInFile || 0) + (msg.duplicatesInDB || 0);
                       
                       // Show simple success message
-                      alert(`✅ UPLOAD COMPLETE!\n\n✅ Imported: ${msg.totalProcessed} candidates\n⚠️  Duplicates Removed: ${duplicateCount}\n\n📌 Records now available in table.`);
+                      toast.success(`Upload complete! Imported: ${msg.totalProcessed} candidates. Duplicates removed: ${duplicateCount}`);
                     } else if (msg.type === 'error') {
-                        alert(`❌ Error: ${msg.message}`);
+                        toast.error(msg.message);
                         setIsUploading(false);
                     }
                 } catch (e) {
@@ -511,7 +610,7 @@ const handleUploadWithMapping = async (mapping) => {
         }
     } catch (error) {
         console.error("Bulk Upload Error:", error);
-        alert("❌ Error: " + error.message);
+        toast.error('Error: ' + error.message);
         setIsUploading(false);
     } finally {
         setShowColumnMapper(false);
@@ -521,7 +620,7 @@ const handleUploadWithMapping = async (mapping) => {
 };
 
 // Iske niche ka ye useParsing wala part MATH HATANA, isse rehne dena
-const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = useParsing(async () => {
+const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = useParsing(async () => {
   await fetchData(1, { search: searchQuery, position: filterJob });
     const res = await authenticatedFetch(API_URL);
     
@@ -541,7 +640,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
   // ✅ BULK EMAIL: Integrated with AWS SES
   const handleBulkEmail = async () => {
     if (selectedIds.length === 0) {
-      alert('Please select at least one candidate.');
+      toast.warning('Please select at least one candidate.');
       return;
     }
 
@@ -549,7 +648,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
     const validCandidates = selectedCandidates.filter(c => c.email && c.email.includes('@'));
 
     if (validCandidates.length === 0) {
-      alert('❌ No valid email addresses found in selected candidates.');
+      toast.warning('No valid email addresses found in selected candidates.');
       return;
     }
 
@@ -577,7 +676,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
     const selectedType = typeMap[emailTypeChoice];
 
     if (!selectedType) {
-      alert('❌ Invalid choice!');
+      toast.error('Invalid choice!');
       return;
     }
 
@@ -618,20 +717,14 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
       const data = await response.json();
 
       if (data.success) {
-        alert(
-          `✅ Bulk Email Campaign Completed!\n\n` +
-          `Total: ${data.data.total}\n` +
-          `Sent: ${data.data.sent}\n` +
-          `Failed: ${data.data.failed}\n` +
-          `Success Rate: ${data.data.successRate}`
-        );
+        toast.success(`Bulk email sent! Total: ${data.data.total}, Sent: ${data.data.sent}, Failed: ${data.data.failed}`);
         setSelectedIds([]);
       } else {
-        alert(`❌ Failed to send bulk emails: ${data.message}`);
+        toast.error(`Failed to send bulk emails: ${data.message}`);
       }
     } catch (error) {
       console.error('Bulk email error:', error);
-      alert('❌ Failed to send bulk emails. Please try again.');
+      toast.error('Failed to send bulk emails. Please try again.');
     } finally {
       setIsUploading(false);
     }
@@ -642,7 +735,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
   // Start bulk email workflow
   const startBulkEmailFlow = () => {
     if (selectedIds.length === 0) {
-      alert('⚠️ Please select at least one candidate!');
+      toast.warning('Please select at least one candidate!');
       return;
     }
     
@@ -650,7 +743,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
     const validCandidates = selected.filter(c => c.email);
     
     if (validCandidates.length === 0) {
-      alert('⚠️ No valid email addresses found in selected candidates!');
+      toast.warning('No valid email addresses found in selected candidates!');
       return;
     }
     
@@ -688,7 +781,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
   // Confirm and send emails
   const handleConfirmSend = async () => {
     if (selectedEmails.size === 0) {
-      alert('⚠️ No emails selected!');
+      toast.warning('No emails selected!');
       return;
     }
     
@@ -742,7 +835,7 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
       
     } catch (error) {
       console.error('Bulk email error:', error);
-      alert('❌ Failed to send bulk emails. Please try again.');
+      toast.error('Failed to send bulk emails. Please try again.');
       setBulkEmailStep('select');
       setIsSendingEmail(false);
     }
@@ -762,22 +855,6 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
   };
 
   // ===================== OLD BULK EMAIL HANDLER (REPLACED) =====================
-  const handleBulkWhatsApp = () => {
-    const selected = candidates.filter(c => selectedIds.includes(c._id));
-    const contacts = selected.map(c => c.contact).filter(p => p);
-
-    if (contacts.length === 0) return alert("No valid contacts found!");
-
-    if (window.confirm(`Opening ${contacts.length} WhatsApp chats. Please allow pop-ups.`)) {
-      contacts.forEach((phone, index) => {
-        const cleanPhone = phone.replace(/\D/g, '');
-        // 1 second ka delay taaki browser block na kare
-        setTimeout(() => {
-          window.open(`https://wa.me/${cleanPhone}?text=Hello, we saw your profile on our ATS dashboard...`, '_blank');
-        }, index * 1000);
-      });
-    }
-  };
 
   /* ================================================================ */
 
@@ -788,6 +865,72 @@ const { selectedIds, isParsing, toggleSelection, selectAll, handleBulkParse } = 
   const sendWhatsApp = (phone) => {
     const cleanPhone = phone.replace(/\D/g, '');
     window.open(`https://wa.me/${cleanPhone}`, '_blank');
+  };
+
+  // Bulk WhatsApp: open wa.me for each selected candidate with valid phone
+  const handleBulkWhatsApp = () => {
+    if (selectedIds.length === 0) {
+      toast.warning('Please select at least one candidate.');
+      return;
+    }
+    const selected = candidates.filter(c => selectedIds.includes(c._id));
+    const withPhone = selected.filter(c => c.contact && c.contact.replace(/\D/g, '').length >= 7);
+    if (withPhone.length === 0) {
+      toast.warning('No valid phone numbers found in selected candidates.');
+      return;
+    }
+    if (!window.confirm(`Open WhatsApp for ${withPhone.length} candidate(s)?\n\n(Each will open in a new tab)`)) return;
+    withPhone.forEach((c, i) => {
+      setTimeout(() => {
+        const cleanPhone = c.contact.replace(/\D/g, '');
+        window.open(`https://wa.me/${cleanPhone}`, '_blank');
+      }, i * 500); // stagger so browser doesn't block popups
+    });
+  };
+
+  // Bulk delete selected candidates
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) {
+      toast.warning('Please select at least one candidate.');
+      return;
+    }
+    if (!window.confirm(`Delete ${selectedIds.length} selected candidate(s)? This cannot be undone.`)) return;
+    try {
+      let deleted = 0;
+      for (const id of selectedIds) {
+        const res = await authenticatedFetch(`${API_URL}/${id}`, { method: 'DELETE' });
+        if (res.ok) deleted++;
+      }
+      toast.success(`Deleted ${deleted} of ${selectedIds.length} candidates.`);
+      setSelectedIds([]);
+      fetchData(1, { search: searchQuery, position: filterJob });
+    } catch (err) {
+      console.error('Bulk delete error:', err);
+      toast.error('Failed to delete some candidates.');
+    }
+  };
+
+  // Bulk status update
+  const handleBulkStatusUpdate = async (newStatus) => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Update status to "${newStatus}" for ${selectedIds.length} candidate(s)?`)) return;
+    try {
+      let updated = 0;
+      for (const id of selectedIds) {
+        const res = await authenticatedFetch(`${API_URL}/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        if (res.ok) updated++;
+      }
+      toast.success(`Updated ${updated} of ${selectedIds.length} candidates to "${newStatus}".`);
+      setSelectedIds([]);
+      fetchData(1, { search: searchQuery, position: filterJob });
+    } catch (err) {
+      console.error('Bulk status update error:', err);
+      toast.error('Failed to update some candidates.');
+    }
   };
 
   // const handleDelete = async (id) => {
@@ -814,15 +957,15 @@ const handleDelete = async (id) => {
             }
 
             if (response.ok) {
-              alert("Deleted successfully!");
+              toast.success('Deleted successfully!');
               fetchData(1, { search: searchQuery, position: filterJob }); 
             } else {
                 const errorData = await response.json();
-                alert(`Error: ${errorData.message}`);
+                toast.error(`Error: ${errorData.message}`);
             }
         } catch (err) {
             console.error("Delete Error:", err);
-            alert("Network error: Could not reach the server.");
+            toast.error('Network error: Could not reach the server.');
         }
     }
 };
@@ -831,15 +974,51 @@ const handleDelete = async (id) => {
 
 
 
-  const handleEdit = (candidate) => {
-    setEditId(candidate._id);
-    setFormData({ ...candidate, resume: null }); 
-    setShowModal(true);
+  const handleEdit = async (candidate) => {
+    try {
+      // Fetch fresh candidate data from backend
+      const response = await authenticatedFetch(`${API_URL}/${candidate._id}`);
+      if (response.ok) {
+        const freshCandidate = await response.json();
+        setEditId(freshCandidate._id);
+        setFormData({ 
+          ...freshCandidate, 
+          resume: null,
+          countryCode: freshCandidate.countryCode || '+91',
+          date: freshCandidate.date ? freshCandidate.date.split('T')[0] : new Date().toISOString().split('T')[0],
+          callBackDate: freshCandidate.callBackDate ? freshCandidate.callBackDate.split('T')[0] : ''
+        });
+        setCountryCode(freshCandidate.countryCode || '+91');
+        setFormErrors({});
+        setShowModal(true);
+      } else {
+        toast.error('Failed to load candidate details. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error fetching candidate:', error);
+      toast.error('Error loading candidate details.');
+    }
   };
 
-  const handleSendEmail = (candidate) => {
+  const handleSendEmail = async (candidate) => {
     if (!candidate.email || !candidate.email.includes('@')) {
-      alert('❌ Invalid email address for this candidate.');
+      toast.warning('Invalid email address for this candidate.');
+      return;
+    }
+
+    // Check if user has email settings configured
+    try {
+      const configRes = await authenticatedFetch(`${BASE_API_URL}/api/email-settings`);
+      const configData = await configRes.json();
+      if (!configData.success || !configData.settings?.isConfigured) {
+        toast.error(
+          'Please configure your email settings first. Go to Email → Email Settings to set up your SMTP credentials.',
+          6000
+        );
+        return;
+      }
+    } catch (err) {
+      toast.error('Please configure your email settings before sending emails.');
       return;
     }
 
@@ -848,7 +1027,88 @@ const handleDelete = async (id) => {
     setCustomMessage('');
     setEmailCC('');
     setEmailBCC('');
+    setQuickName(candidate.name || '');
+    setQuickPosition(candidate.position || '');
+    setQuickDepartment(candidate.department || '');
+    setQuickJoiningDate(candidate.joiningDate || '');
+    setShowQuickPreview(false);
+    setQuickPreviewHtml('');
+    setQuickPreviewSubject('');
+    setSelectedTemplate(null);
+    setTemplateVars({});
+    setEmailMode('template');
     setShowEmailModal(true);
+
+    // Fetch templates
+    try {
+      const res = await authenticatedFetch(`${BASE_API_URL}/api/email-templates`);
+      const data = await res.json();
+      if (data.success && data.templates.length > 0) {
+        setEmailTemplates(data.templates);
+      } else {
+        // Seed defaults first
+        await authenticatedFetch(`${BASE_API_URL}/api/email-templates/seed-defaults`, { method: 'POST' });
+        const res2 = await authenticatedFetch(`${BASE_API_URL}/api/email-templates`);
+        const data2 = await res2.json();
+        if (data2.success) setEmailTemplates(data2.templates);
+      }
+    } catch (err) {
+      console.error('Failed to load templates:', err);
+    }
+  };
+
+  const selectEmailTemplate = (template) => {
+    setSelectedTemplate(template);
+    // Pre-fill variables from candidate data
+    const vars = {};
+    (template.variables || []).forEach(v => {
+      if (v === 'candidateName') vars[v] = emailRecipient?.name || '';
+      else if (v === 'position') vars[v] = emailRecipient?.position || '';
+      else if (v === 'company') vars[v] = emailRecipient?.client || emailRecipient?.companyName || '';
+      else if (v === 'ctc') vars[v] = emailRecipient?.ctc || '';
+      else if (v === 'experience') vars[v] = emailRecipient?.experience || '';
+      else if (v === 'location') vars[v] = emailRecipient?.location || '';
+      else vars[v] = '';
+    });
+    setTemplateVars(vars);
+  };
+
+  const sendTemplateEmail = async () => {
+    if (!emailRecipient || !selectedTemplate) return;
+    setIsSendingEmail(true);
+    try {
+      const parseEmails = (str) => str.split(',').map(e => e.trim()).filter(e => e && e.includes('@'));
+      const body = {
+        templateId: selectedTemplate._id,
+        recipients: { email: emailRecipient.email, name: emailRecipient.name },
+        variables: templateVars,
+      };
+      if (emailCC.trim()) body.cc = parseEmails(emailCC);
+      if (emailBCC.trim()) body.bcc = parseEmails(emailBCC);
+
+      const response = await authenticatedFetch(`${BASE_API_URL}/api/email-templates/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await response.json();
+      if (data.success) {
+        toast.success(`Email sent to ${emailRecipient.email}`);
+        setShowEmailModal(false);
+        setEmailRecipient(null);
+        setSelectedTemplate(null);
+      } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+        toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
+        setShowEmailModal(false);
+      } else {
+        toast.error(`Failed: ${data.message}`);
+      }
+    } catch (err) {
+      console.error('Template email error:', err);
+      toast.error('Failed to send email');
+    } finally {
+      setIsSendingEmail(false);
+    }
   };
   const sendSingleEmail = async () => {
     if (!emailRecipient) return;
@@ -866,12 +1126,12 @@ const handleDelete = async (id) => {
 
       const emailBody = {
         email: emailRecipient.email,
-        name: emailRecipient.name,
-        position: emailRecipient.position,
+        name: quickName || emailRecipient.name,
+        position: quickPosition || emailRecipient.position,
         emailType: emailType,
         customMessage: customMessage,
-        department: emailRecipient.department || 'N/A',
-        joiningDate: emailRecipient.joiningDate || 'TBD'
+        department: quickDepartment || emailRecipient.department || 'N/A',
+        joiningDate: quickJoiningDate || emailRecipient.joiningDate || 'TBD'
       };
 
       // Add CC if provided
@@ -895,18 +1155,21 @@ const handleDelete = async (id) => {
       const data = await response.json();
 
       if (data.success) {
-        let successMessage = `✅ Email sent successfully to ${emailRecipient.email}!`;
-        if (emailCC.trim()) successMessage += `\n📋 CC: ${emailCC}`;
-        if (emailBCC.trim()) successMessage += `\n🔒 BCC: ${emailBCC}`;
-        alert(successMessage);
+        let successMessage = `Email sent to ${emailRecipient.email}`;
+        if (emailCC.trim()) successMessage += ` (CC: ${emailCC})`;
+        if (emailBCC.trim()) successMessage += ` (BCC: ${emailBCC})`;
+        toast.success(successMessage);
         setShowEmailModal(false);
         setEmailRecipient(null);
+      } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+        toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
+        setShowEmailModal(false);
       } else {
-        alert(`❌ Failed to send email: ${data.message}`);
+        toast.error(`Failed to send email: ${data.message}`);
       }
     } catch (error) {
       console.error('Email send error:', error);
-      alert('❌ Failed to send email. Please try again.');
+      toast.error('Failed to send email. Please try again.');
     } finally {
       setIsSendingEmail(false);
     }
@@ -916,24 +1179,30 @@ const handleDelete = async (id) => {
 const handleInputChange = async (e) => {
   const { name, value, files } = e.target;
 
-  // 1. Pehle value ko format kar lete hain (Name aur Email ke liye)
-  let finalValue = value;
-
-  if (name === 'name' && value) {
-    
-    finalValue = value.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  // Clear error for the field being edited
+  if (formErrors[name]) {
+    setFormErrors(prev => ({ ...prev, [name]: '' }));
   }
 
-  if (name === 'email' && value) {
-    // gnail.con -> gmail.com logic
+  // --- Auto-capitalize helper (Title Case) ---
+  const toTitleCase = (str) => str.replace(/\b\w/g, c => c.toUpperCase());
+
+  // --- Determine formatted value ---
+  let finalValue = value;
+
+  if (name === 'email') {
+    // Email: always lowercase, auto-fix common typos
     finalValue = value.toLowerCase()
       .replace(/@gnail\.con$/, '@gmail.com')
       .replace(/@gnail\.com$/, '@gmail.com')
       .replace(/@gmail\.con$/, '@gmail.com')
       .replace(/@gmal\.com$/, '@gmail.com');
+  } else if (name === 'name' || name === 'spoc' || name === 'location') {
+    // Auto-capitalize every word, trim leading spaces
+    finalValue = toTitleCase(value.replace(/^\s+/, ''));
   }
 
-  // 2. Resume Parsing Logic (Ye tumhara original logic hai)
+  // --- Resume parsing ---
   if (name === 'resume') {
     const file = files[0];
     setFormData(prev => ({ ...prev, resume: file }));
@@ -953,13 +1222,13 @@ const handleInputChange = async (e) => {
           const result = await response.json();
           console.log("Parsed Data Received:", result);
 
-          // Parsed data ko bhi format karke state mein save karenge
           setFormData(prev => ({
             ...prev,
-            name: result.name ? (result.name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')) : prev.name,
-            email: result.email ? (result.email.toLowerCase().replace(/@gnail\.con$/, '@gmail.com').replace(/@gmail\.con$/, '@gmail.com')) : prev.email,
+            name: result.name ? toTitleCase(result.name.trim()) : prev.name,
+            email: result.email ? result.email.toLowerCase().trim().replace(/@gnail\.con$/, '@gmail.com').replace(/@gmail\.con$/, '@gmail.com') : prev.email,
             contact: result.contact || prev.contact
           }));
+          setFormErrors({}); // Clear all errors after successful parse
         }
       } catch (error) {
         console.error("Auto-parse error:", error);
@@ -968,7 +1237,6 @@ const handleInputChange = async (e) => {
       }
     }
   } else {
-    // 3. Normal Input update (Yahan 'finalValue' use ho rahi hai)
     setFormData(prev => ({ ...prev, [name]: finalValue }));
   }
 };
@@ -977,36 +1245,92 @@ const handleInputChange = async (e) => {
 const handleAddCandidate = async (e) => {
   e.preventDefault();
 
+  // --- Auto-trim all string fields before validation ---
+  const trimmed = {};
+  Object.keys(formData).forEach(key => {
+    if (typeof formData[key] === 'string') {
+      trimmed[key] = formData[key].trim();
+    } else {
+      trimmed[key] = formData[key];
+    }
+  });
+  setFormData(prev => ({ ...prev, ...trimmed }));
+
+  // --- Step-by-step validation ---
+  const errors = {};
+
+  // 1. Name: required, min 2 chars, letters/spaces only
+  if (!trimmed.name) {
+    errors.name = 'Name is required';
+  } else if (trimmed.name.length < 2) {
+    errors.name = 'Name must be at least 2 characters';
+  } else if (!/^[a-zA-Z\s.''-]+$/.test(trimmed.name)) {
+    errors.name = 'Name can only contain letters, spaces, and hyphens';
+  }
+
+  // 2. Email: required, valid format
+  if (!trimmed.email) {
+    errors.email = 'Email is required';
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed.email)) {
+    errors.email = 'Please enter a valid email address';
+  }
+
+  // 3. Contact: required, 10 digits for India
+  if (!trimmed.contact) {
+    errors.contact = 'Contact number is required';
+  } else {
+    const digits = trimmed.contact.replace(/\D/g, '');
+    if (countryCode === '+91' && digits.length !== 10) {
+      errors.contact = 'Enter a valid 10-digit mobile number';
+    } else if (countryCode === '+1' && digits.length !== 10) {
+      errors.contact = 'Enter a valid 10-digit phone number';
+    } else if (digits.length < 7 || digits.length > 15) {
+      errors.contact = 'Enter a valid phone number';
+    }
+  }
+
+  // 4. CTC: required
+  if (!trimmed.ctc) {
+    errors.ctc = 'Current CTC is required';
+  }
+
+  // If there are errors, set them, focus the first invalid field, and stop
+  if (Object.keys(errors).length > 0) {
+    setFormErrors(errors);
+    // Focus on the first error field
+    const firstErrorField = Object.keys(errors)[0];
+    if (fieldRefs[firstErrorField]?.current) {
+      fieldRefs[firstErrorField].current.focus();
+      fieldRefs[firstErrorField].current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    toast.warning(errors[Object.keys(errors)[0]]);
+    return;
+  }
+
+  setFormErrors({});
+
   try {
     let response;
     
-    if (editId) {
-      // --- UPDATE LOGIC (For Edit/Call Back) ---
-      response = await authenticatedFetch(`${API_URL}/${editId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData) 
-      });
-    } else {
-      // --- ADD NEW LOGIC (For New Candidate with File) ---
-      const data = new FormData();
-      Object.keys(formData).forEach((key) => {
-        if (['statusHistory', '_id', '__v', 'updatedAt'].includes(key)) return;
-        if (key === 'resume') {
-          if (formData[key] instanceof File) data.append('resume', formData[key]);
-        } else {
-          data.append(key, formData[key] || "");
-        }
-      });
+    // Use FormData for both create and edit (supports file upload)
+    const data = new FormData();
+    Object.keys(trimmed).forEach((key) => {
+      if (['statusHistory', '_id', '__v', 'updatedAt', 'createdAt'].includes(key)) return;
+      if (key === 'resume') {
+        if (trimmed[key] instanceof File) data.append('resume', trimmed[key]);
+      } else {
+        data.append(key, trimmed[key] || "");
+      }
+    });
 
-      // For FormData, we need to let the browser set Content-Type automatically
-      const token = localStorage.getItem('token');
-      response = await fetch(API_URL, { 
-        method: 'POST',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-        body: data 
-      });
-    }
+    const token = localStorage.getItem('token');
+    const url = editId ? `${API_URL}/${editId}` : API_URL;
+    const method = editId ? 'PUT' : 'POST';
+    response = await fetch(url, {
+      method,
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      body: data
+    });
 
     if (isUnauthorized(response)) {
       handleUnauthorized();
@@ -1014,18 +1338,19 @@ const handleAddCandidate = async (e) => {
     }
 
     if (response.ok) {
-      alert(editId ? "✅ Profile Updated!" : "✅ Candidate Added!");
+      toast.success(editId ? 'Profile Updated!' : 'Candidate Added!');
       setShowModal(false);
       setEditId(null);
       setFormData(initialFormState);
+      setFormErrors({});
       fetchData(1, { search: searchQuery, position: filterJob });
     } else {
       const errJson = await response.json();
-      alert("❌ Error: " + errJson.message);
+      toast.error('Error: ' + errJson.message);
     }
   } catch (err) { 
     console.error(err);
-    alert("❌ Server Error"); 
+    toast.error('Server Error'); 
   }
 };
   const handleStatusChange = async (id, newStatus) => {
@@ -1146,47 +1471,34 @@ const handleAddCandidate = async (e) => {
     return emailCheck.isValid && mobileCheck.isValid && nameCheck.isValid;
   };
 
-  let debugLogCount = 0;
   const filteredCandidates = candidates.filter(c => {
-    // If showOnlyCorrect is ON, only show 100% properly filled records
-    if (showOnlyCorrect && !is100PercentCorrect(c)) {
-      // Debug first 3 failures to console
-      if (debugLogCount < 3) {
-        const emailCheck = validateAndFixEmail(c.email);
-        const mobileCheck = validateAndFixMobile(c.contact);
-        const nameCheck = validateAndFixName(c.name);
-        console.log(`🔴 [${debugLogCount + 1}] Filtered: "${c.name}" | Email: ${c.email?.substring(0, 30)} (valid: ${emailCheck.isValid}) | Contact: ${c.contact} (valid: ${mobileCheck.isValid}) | Name valid: ${nameCheck.isValid}`);
-        debugLogCount++;
-      }
-      return false;
-    }
-
-    const matchesSearch = 
+    const matchesSearch = !searchQuery || 
       c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.position?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.location?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesJob = filterJob ? c.position === filterJob : true;
+      c.location?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.companyName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.contact?.toLowerCase().includes(searchQuery.toLowerCase());
 
     // ✅ Advanced Search Filters
     const advSearch = advancedSearchFilters;
     
-    // Position filter
+    // Position filter (exact match from dropdown)
     const matchesAdvPosition = advSearch.position 
-      ? (c.position?.toLowerCase().includes(advSearch.position.toLowerCase()) || false)
+      ? (c.position?.toLowerCase() === advSearch.position.toLowerCase())
       : true;
     
-    // Company filter
+    // Company filter (exact match from dropdown)
     const matchesAdvCompany = advSearch.companyName 
-      ? (c.companyName?.toLowerCase().includes(advSearch.companyName.toLowerCase()) || false)
+      ? (c.companyName?.toLowerCase() === advSearch.companyName.toLowerCase())
       : true;
     
-    // Location filter
+    // Location filter (partial text match)
     const matchesAdvLocation = advSearch.location 
       ? (c.location?.toLowerCase().includes(advSearch.location.toLowerCase()) || false)
       : true;
     
-    // Experience range filter
+    // Experience range filter (numeric comparison)
     const candidateExp = parseFloat(c.experience) || 0;
     const expMin = advSearch.expMin ? parseFloat(advSearch.expMin) : null;
     const expMax = advSearch.expMax ? parseFloat(advSearch.expMax) : null;
@@ -1194,29 +1506,40 @@ const handleAddCandidate = async (e) => {
       (expMin === null || candidateExp >= expMin) &&
       (expMax === null || candidateExp <= expMax);
     
-    // CTC range filter
-    const parseCTC = (ctcStr) => {
-      if (!ctcStr) return 0;
-      const str = String(ctcStr).toUpperCase().trim();
-      if (str.includes('L')) return parseFloat(str) * 100000;
-      if (str.includes('K')) return parseFloat(str) * 1000;
-      return parseFloat(str) || 0;
+    // CTC range filter (index-based comparison for dropdown ranges)
+    const getCTCRank = (val) => {
+      if (!val) return -1;
+      const idx = ctcRanges.indexOf(val);
+      if (idx !== -1) return idx;
+      // Fallback: parse numeric value and map to nearest range index
+      const str = String(val).toUpperCase().trim();
+      const num = parseFloat(str.replace(/[^0-9.]/g, ''));
+      if (isNaN(num)) return -1;
+      // Convert to LPA value
+      let lpa = num;
+      if (str.includes('K')) lpa = num / 100; // 50K = 0.5 LPA
+      // Map LPA to the closest range index
+      const lpaBreakpoints = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 8, 9, 10, 999];
+      for (let i = 0; i < lpaBreakpoints.length - 1; i++) {
+        if (lpa <= lpaBreakpoints[i + 1]) return i;
+      }
+      return ctcRanges.length - 1; // Above 10L
     };
     
-    const candidateCTC = parseCTC(c.ctc);
-    const ctcMin = advSearch.ctcMin ? parseCTC(advSearch.ctcMin) : null;
-    const ctcMax = advSearch.ctcMax ? parseCTC(advSearch.ctcMax) : null;
+    const candidateCTCRank = getCTCRank(c.ctc);
+    const ctcMinRank = advSearch.ctcMin ? getCTCRank(advSearch.ctcMin) : null;
+    const ctcMaxRank = advSearch.ctcMax ? getCTCRank(advSearch.ctcMax) : null;
     const matchesCTCRange = 
-      (ctcMin === null || candidateCTC >= ctcMin) &&
-      (ctcMax === null || candidateCTC <= ctcMax);
+      (ctcMinRank === null || candidateCTCRank >= ctcMinRank) &&
+      (ctcMaxRank === null || candidateCTCRank <= ctcMaxRank);
     
     // Expected CTC range filter
-    const candidateExpectedCTC = parseCTC(c.expectedCtc);
-    const expectedCtcMin = advSearch.expectedCtcMin ? parseCTC(advSearch.expectedCtcMin) : null;
-    const expectedCtcMax = advSearch.expectedCtcMax ? parseCTC(advSearch.expectedCtcMax) : null;
+    const candidateExpCTCRank = getCTCRank(c.expectedCtc);
+    const expectedCtcMinRank = advSearch.expectedCtcMin ? getCTCRank(advSearch.expectedCtcMin) : null;
+    const expectedCtcMaxRank = advSearch.expectedCtcMax ? getCTCRank(advSearch.expectedCtcMax) : null;
     const matchesExpectedCTCRange = 
-      (expectedCtcMin === null || candidateExpectedCTC >= expectedCtcMin) &&
-      (expectedCtcMax === null || candidateExpectedCTC <= expectedCtcMax);
+      (expectedCtcMinRank === null || candidateExpCTCRank >= expectedCtcMinRank) &&
+      (expectedCtcMaxRank === null || candidateExpCTCRank <= expectedCtcMaxRank);
     
     // Date filter
     const matchesDate = advSearch.date 
@@ -1226,7 +1549,7 @@ const handleAddCandidate = async (e) => {
     const matchesAdvanced = matchesAdvPosition && matchesAdvCompany && matchesAdvLocation && 
                           matchesExpRange && matchesCTCRange && matchesExpectedCTCRange && matchesDate;
     
-    return matchesSearch && matchesJob && matchesAdvanced;
+    return matchesSearch && matchesAdvanced;
   });
   console.log('📋 Displayed: ' + filteredCandidates.length + ' | Total in DB: ' + candidates.length + ' | Filter: ' + (showOnlyCorrect ? 'ON' : 'OFF'));
 
@@ -1245,42 +1568,12 @@ const handleAddCandidate = async (e) => {
 
   useEffect(() => {
     isAutoPagingRef.current = false;
-  }, [currentPage, searchQuery, filterJob]);
+  }, [currentPage, searchQuery]);
   
   // ✅ NO AUTO-SCROLL: Only button-based pagination
   // Removed IntersectionObserver - users must click "Load More" button
 
   const isAllSelected = filteredCandidates.length > 0 && selectedIds.length === filteredCandidates.length;
-
-  const stickyColWidths = {
-    checkbox: 60,
-    actions: 90,
-    srNo: 80,
-    resume: 90,
-    tools: 120
-  };
-  const stickyLeftOffsets = [
-    stickyColWidths.checkbox,
-    stickyColWidths.checkbox + stickyColWidths.actions,
-    stickyColWidths.checkbox + stickyColWidths.actions + stickyColWidths.srNo,
-    stickyColWidths.checkbox + stickyColWidths.actions + stickyColWidths.srNo + stickyColWidths.resume
-  ];
-
-  const getStickyHeaderStyle = (idx) => {
-    if (idx === 0) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.actions}px`, minWidth: `${stickyColWidths.actions}px` };
-    if (idx === 1) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.srNo}px`, minWidth: `${stickyColWidths.srNo}px` };
-    if (idx === 2) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.resume}px`, minWidth: `${stickyColWidths.resume}px` };
-    if (idx === 3) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.tools}px`, minWidth: `${stickyColWidths.tools}px` };
-    return undefined;
-  };
-
-  const getStickyBodyStyle = (idx) => {
-    if (idx === 0) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.actions}px`, minWidth: `${stickyColWidths.actions}px` };
-    if (idx === 1) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.srNo}px`, minWidth: `${stickyColWidths.srNo}px` };
-    if (idx === 2) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.resume}px`, minWidth: `${stickyColWidths.resume}px` };
-    if (idx === 3) return { left: `${stickyLeftOffsets[idx]}px`, width: `${stickyColWidths.tools}px`, minWidth: `${stickyColWidths.tools}px` };
-    return undefined;
-  };
 
   const tableColumns = [
     {
@@ -1294,67 +1587,115 @@ const handleAddCandidate = async (e) => {
         </div>
       )
     },
-    { key: 'srNo', label: 'Sr No.', render: (_, index) => (currentPage - 1) * PAGE_SIZE + index + 1 },
+    { key: 'srNo', label: 'Sr No.', render: (_, index) => <span className="text-sm font-mono text-gray-500">{(currentPage - 1) * PAGE_SIZE + index + 1}</span> },
     {
       key: 'resume',
       label: 'Resume',
-      render: (candidate) => candidate.resume && (
-        <a href={candidate.resume} target="_blank" rel="noreferrer" className="inline-flex p-2 rounded-lg" style={{backgroundColor: 'var(--info-bg)', color: 'var(--info-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-bg)'; }}><FileText size={18} /></a>
-      )
+      render: (candidate) => candidate.resume ? (
+        <div className="flex items-center gap-1">
+          <button onClick={() => { const url = candidate.resume.startsWith('http') ? candidate.resume : `${BASE_API_URL}${candidate.resume}`; handleResumePreview(candidate.resume); }} title="Preview Resume" className="p-1.5 rounded-lg cursor-pointer" style={{backgroundColor: 'var(--info-bg)', color: 'var(--info-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-bg)'; }}><Eye size={15} /></button>
+          <a href={candidate.resume.startsWith('http') ? candidate.resume : `${BASE_API_URL}${candidate.resume}`} download title="Download Resume" className="p-1.5 rounded-lg" style={{backgroundColor: 'var(--success-bg)', color: 'var(--success-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-bg)'; }}><Download size={15} /></a>
+        </div>
+      ) : <span className="text-gray-300">—</span>
     },
     {
       key: 'tools',
       label: 'Contact Tools',
       render: (candidate) => (
-        <div className="flex gap-2">
-          <button onClick={() => handleSendEmail(candidate)} className="p-2 rounded-lg" title="Send Email" style={{backgroundColor: 'var(--primary-lighter)', color: 'var(--primary-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--primary-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--primary-lighter)'; }}><Mail size={16}/></button>
-          <button onClick={() => sendWhatsApp(candidate.contact)} className="p-2 rounded-lg" title="WhatsApp Message" style={{backgroundColor: 'var(--success-bg)', color: 'var(--success-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-bg)'; }}><MessageCircle size={16}/></button>
+        <div className="flex gap-1.5">
+          <button onClick={() => handleSendEmail(candidate)} className="w-8 h-8 flex items-center justify-center rounded-full transition-all hover:scale-110" title="Send Email" style={{backgroundColor: '#dbeafe', color: '#2563eb'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#bfdbfe'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#dbeafe'; }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+          </button>
+          <button onClick={() => sendWhatsApp(candidate.contact)} className="w-8 h-8 flex items-center justify-center rounded-full transition-all hover:scale-110" title="WhatsApp Message" style={{backgroundColor: '#dcfce7', color: '#16a34a'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#bbf7d0'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#dcfce7'; }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          </button>
         </div>
       )
     },
-    { key: 'date', label: 'Date', render: (candidate) => candidate.date },
-    { key: 'location', label: 'Location', render: (candidate) => candidate.location },
-    { key: 'position', label: 'Position', render: (candidate) => <span className="font-bold">{candidate.position}</span> },
-    { key: 'fls', label: 'FLS/Non FLS', render: (candidate) => candidate.fls },
-    { key: 'name', label: 'Name', render: (candidate) => <span className="font-bold">{candidate.name}</span> },
-    { key: 'contact', label: 'Contact', render: (candidate) => candidate.contact },
-    { key: 'email', label: 'Email', render: (candidate) => candidate.email },
-    { key: 'companyName', label: 'Company Name', render: (candidate) => candidate.companyName },
-    { key: 'experience', label: 'Experience', render: (candidate) => candidate.experience },
+    { key: 'date', label: 'Date', render: (candidate) => <span className="text-sm text-gray-600 whitespace-nowrap">{candidate.date ? new Date(candidate.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</span> },
+    { key: 'location', label: 'Location', render: (candidate) => <span className="text-sm text-gray-700 whitespace-nowrap">{candidate.location || '—'}</span> },
+    { key: 'position', label: 'Position', render: (candidate) => candidate.position ? <span className="text-sm font-semibold text-indigo-700 whitespace-nowrap">{candidate.position}</span> : <span className="text-gray-300">—</span> },
+    { key: 'fls', label: 'FLS', render: (candidate) => candidate.fls ? <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${candidate.fls === 'FLS' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>{candidate.fls}</span> : <span className="text-gray-300">—</span> },
+    { key: 'name', label: 'Name', render: (candidate) => <span className="text-sm font-semibold text-gray-900 whitespace-nowrap">{candidate.name}</span> },
+    { key: 'contact', label: 'Contact', render: (candidate) => <span className="text-sm font-mono text-gray-600 whitespace-nowrap">{candidate.contact || '—'}</span> },
+    { key: 'email', label: 'Email', render: (candidate) => <span className="text-sm text-gray-600 whitespace-nowrap">{candidate.email || '—'}</span> },
+    { key: 'companyName', label: 'Company', render: (candidate) => <span className="text-sm text-gray-700 whitespace-nowrap">{candidate.companyName || '—'}</span> },
+    { key: 'experience', label: 'Experience', render: (candidate) => candidate.experience ? <span className="text-sm">{candidate.experience} </span> : <span className="text-gray-300">—</span> },
     {
       key: 'ctc',
       label: 'CTC',
-      render: (candidate) => candidate.ctc ? `${candidate.ctc} LPA` : '-'
+      render: (candidate) => candidate.ctc ? <span className="text-sm whitespace-nowrap">{candidate.ctc}</span> : <span className="text-gray-300">—</span>
     },
     {
       key: 'expectedCtc',
       label: 'Expected CTC',
-      render: (candidate) => candidate.expectedCtc ? `${candidate.expectedCtc} LPA` : '-'
+      render: (candidate) => candidate.expectedCtc ? <span className="text-sm whitespace-nowrap">{candidate.expectedCtc}</span> : <span className="text-gray-300">—</span>
     },
     {
       key: 'noticePeriod',
-      label: 'Notice period',
-      render: (candidate) => candidate.noticePeriod === 0 ? 'Immediate' : candidate.noticePeriod ? `${candidate.noticePeriod} days` : '-'
+      label: 'Notice Period',
+      render: (candidate) => candidate.noticePeriod ? <span className="text-sm whitespace-nowrap">{candidate.noticePeriod}</span> : <span className="text-gray-300">—</span>
     },
     {
       key: 'status',
       label: 'Status',
-      render: (candidate) => (
-        <select className="p-1.5 rounded-full text-xs font-bold" style={{backgroundColor: candidate.status === 'Hired' ? 'var(--success-bg)' : 'var(--info-bg)', color: candidate.status === 'Hired' ? 'var(--success-main)' : 'var(--info-main)'}} value={candidate.status} onChange={(e) => handleStatusChange(candidate._id, e.target.value)}>
-          {statusOptions.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-      )
+      render: (candidate) => {
+        const remark = candidate.remark || '';
+        return (
+          <div className="flex items-center gap-2">
+            <span className={
+              `px-3 py-1 rounded-full text-xs font-bold ` +
+              (candidate.status === 'Hired' ? 'bg-green-100 text-green-700' :
+                candidate.status === 'Rejected' ? 'bg-red-100 text-red-700' :
+                candidate.status === 'Interview' ? 'bg-blue-100 text-blue-700' :
+                'bg-blue-50 text-blue-700')
+            }>
+              {candidate.status}
+            </span>
+            {remark && (
+              <div className="relative group">
+                <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title="View remark">
+                  <Info size={16} className="text-gray-400 hover:text-gray-600" />
+                </button>
+                <div className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 p-3 bg-gray-800 text-white text-xs rounded-lg shadow-xl whitespace-normal">
+                  <div className="leading-relaxed">{remark}</div>
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-slate-800"></div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
     },
-    { key: 'client', label: 'Client', render: (candidate) => candidate.client },
-    { key: 'spoc', label: 'SPOC', render: (candidate) => candidate.spoc },
+    { key: 'client', label: 'Client', render: (candidate) => <span className="text-sm text-gray-700 whitespace-nowrap">{candidate.client || '—'}</span> },
+    { key: 'spoc', label: 'SPOC', render: (candidate) => <span className="text-sm text-gray-700 whitespace-nowrap">{candidate.spoc || '—'}</span> },
     {
       key: 'source',
-      label: 'Source of CV',
-      render: (candidate) => candidate.source || '-'
+      label: 'Source',
+      render: (candidate) => candidate.source ? <span className="text-sm px-2.5 py-0.5 bg-gray-100 text-gray-600 rounded-full whitespace-nowrap">{candidate.source}</span> : <span className="text-gray-300">—</span>
     }
   ];
 
-  const statusOptions = ['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Rejected'];
+  const [statusOptions, setStatusOptions] = useState(['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Rejected']);
+
+  // Fetch status options from master data (or backend) on mount
+  useEffect(() => {
+    const fetchStatusOptions = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${BASE_API_URL}/api/statuses`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data) && data.length > 0) setStatusOptions(data);
+        }
+      } catch (err) {
+        // fallback to default
+      }
+    };
+    fetchStatusOptions();
+  }, []);
 
   // ✅ REVIEW & FIX HELPERS
   const handleRevalidateRecord = async (record) => {
@@ -1377,9 +1718,9 @@ const handleAddCandidate = async (e) => {
         validation: result.validation
       });
       
-      alert(`✅ Category: ${result.validation.category.toUpperCase()}\n${result.validation.confidence}% Confidence`);
+      toast.success(`Category: ${result.validation.category.toUpperCase()} — ${result.validation.confidence}% Confidence`);
     } catch (error) {
-      alert(`❌ Revalidation error: ${error.message}`);
+      toast.error(`Revalidation error: ${error.message}`);
     }
   };
 
@@ -1458,7 +1799,7 @@ const handleAddCandidate = async (e) => {
       
     } catch (error) {
       console.error('❌ Error importing:', error);
-      alert('❌ Import error: ' + error.message);
+      toast.error('Import error: ' + error.message);
     }
   };
 
@@ -1508,7 +1849,7 @@ const handleAddCandidate = async (e) => {
       }
       
       console.log(`✅ [IMPORT] Response:`, result);
-      alert(`✅ ${result.imported} candidates imported successfully!\n⚠️ ${reviewRecords.length} added for review`);
+      toast.success(`${result.imported} candidates imported successfully! ${reviewRecords.length} added for review`);
       
       // Get the review count from reviewData before closing modal
       const reviewCount = reviewRecords.length;
@@ -1530,7 +1871,7 @@ const handleAddCandidate = async (e) => {
       }
     } catch (error) {
       console.error(`❌ [IMPORT] Error:`, error);
-      alert(`❌ Import error: ${error.message}`);
+      toast.error(`Import error: ${error.message}`);
     }
   };
 
@@ -1546,7 +1887,7 @@ const handleAddCandidate = async (e) => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-900">
+    <div className="min-h-screen bg-gray-50 px-8 py-6 font-sans text-gray-900">
       
       {/* COLUMN MAPPER MODAL */}
       {showColumnMapper && (
@@ -1564,37 +1905,42 @@ const handleAddCandidate = async (e) => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm text-center">
             <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-            <h3 className="text-lg font-bold text-slate-800">Uploading candidates…</h3>
-            <p className="mt-2 text-sm text-slate-500">Please wait. This can take a few minutes for large files.</p>
+            <h3 className="text-lg font-bold text-gray-800">Uploading candidates…</h3>
+            <p className="mt-2 text-sm text-gray-500">Please wait. This can take a few minutes for large files.</p>
           </div>
         </div>
       )}
 
+      {/* Inline loading indicator — shown above the table, no modal */}
       {isLoadingInitial && candidates.length === 0 && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/20">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-center">
-            <div className="mx-auto mb-6 h-12 w-12 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
-            <h3 className="text-xl font-bold text-slate-800 mb-2">Loading Candidates</h3>
-            <p className="text-sm text-slate-600">Fetching candidate data from database...</p>
-            <div className="mt-4 px-4 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
-              <p className="text-xs text-indigo-700 font-semibold">⏳ Connected to backend at {BASE_API_URL}</p>
-            </div>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-indigo-500 border-t-transparent" />
+          <p className="text-sm font-semibold text-gray-600">Loading candidates...</p>
+          {/* Skeleton rows */}
+          <div className="mt-8 space-y-3 max-w-4xl mx-auto">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="flex items-center gap-4 animate-pulse">
+                <div className="w-8 h-4 bg-gray-200 rounded" />
+                <div className="flex-1 h-4 bg-gray-200 rounded" />
+                <div className="w-32 h-4 bg-gray-200 rounded" />
+                <div className="w-24 h-4 bg-gray-200 rounded" />
+                <div className="w-20 h-4 bg-gray-200 rounded" />
+                <div className="w-16 h-4 bg-gray-100 rounded" />
+              </div>
+            ))}
           </div>
         </div>
       )}
       
       {/* HEADER SECTION */}
-      <div className="mb-8">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 pb-6 border-b border-slate-200">
+      <div className="mb-6">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-gray-200">
           <div className="flex-1">
-            <h1 className="text-4xl font-extrabold text-slate-900 tracking-tight mb-2">All Candidates</h1>
-            <p className="text-slate-600 text-sm font-medium">Manage, search, and review all candidate records</p>
-            <div className="mt-4">
-              {/* PAGINATION INFO */}
-              <p className="text-xs text-slate-500 font-mono">
-                📊 Page {currentPage} of {totalFilteredPages} • Records {(currentPage - 1) * PAGE_SIZE + 1}-{Math.min(currentPage * PAGE_SIZE, filteredCandidates.length)} of {filteredCandidates.length.toLocaleString()}
-              </p>
-            </div>
+            <h1 className="text-2xl font-bold text-gray-900 tracking-tight">All Candidates</h1>
+            <p className="text-gray-500 text-xs mt-0.5">
+              {filteredCandidates.length.toLocaleString()} records
+              {searchQuery && <span> matching &ldquo;{searchQuery}&rdquo;</span>}
+            </p>
           </div>
           
           <div className="flex gap-3 items-center">
@@ -1656,7 +2002,7 @@ const handleAddCandidate = async (e) => {
             <Upload size={20} /> {isUploading ? 'Uploading...' : '⚡ Auto Import'}
           </button>
 
-          <button onClick={() => navigate('/add-candidate')} className="flex items-center gap-2 bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-slate-800 shadow-lg transition">
+          <button onClick={() => navigate('/add-candidate')} className="flex items-center gap-2 bg-gray-900 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-gray-800 shadow-lg transition">
             <Plus size={20} /> Add Candidate
           </button>
 
@@ -1670,13 +2016,13 @@ const handleAddCandidate = async (e) => {
                 });
                 if (!res.ok) throw new Error('Failed to clear database');
                 const data = await res.json();
-                alert(`✅ Success!\n\n🗑️ Deleted: ${data.deletedCount} records\n\nDatabase is now empty.`);
+                toast.success(`Deleted ${data.deletedCount} records. Database is now empty.`);
                 setCandidates([]);
                 setCurrentPage(1);
                 setSearchQuery('');
                 setFilterJob('');
               } catch (err) {
-                alert(`❌ Error: ${err.message}`);
+                toast.error(err.message);
               }
             }}
             className="flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-red-700 shadow-lg transition"
@@ -1694,106 +2040,27 @@ const handleAddCandidate = async (e) => {
         </div>
 
         {/* ADVANCED SEARCH BUTTON & DOWNLOAD BUTTON */}
-        <div className="mt-4 flex justify-start gap-3">
+        <div className="mt-3 flex justify-start gap-3">
           <button 
             onClick={() => setShowAdvancedSearch(!showAdvancedSearch)} 
-            className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-bold transition shadow-md border ${ 
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition border ${ 
               showAdvancedSearch 
-                ? 'bg-blue-700 text-white border-blue-800' 
-                : 'bg-blue-600 text-white border-blue-700 hover:bg-blue-700'
+                ? 'bg-indigo-600 text-white border-indigo-700' 
+                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
             }`}
           >
-            <Search size={20} /> {showAdvancedSearch ? 'Close Advanced Search' : 'Advanced Search'}
+            <Filter size={16} /> {showAdvancedSearch ? 'Close Filters' : 'Advanced Search'}
           </button>
 
-          {/* DOWNLOAD BUTTON */}
-          <button 
-            onClick={() => {
-              const headers = ['SR No', 'Date', 'Name', 'Email', 'Contact', 'Position', 'Company', 'Location', 'Experience (Yrs)', 'Current CTC', 'Expected CTC', 'Notice Period (Days)', 'FLS', 'Status', 'Client', 'SPOC', 'Source', 'Call Back Date'];
-              const rows = filteredCandidates.map(c => [
-                c.srNo || '',
-                c.date || '',
-                c.name || '',
-                c.email || '',
-                c.contact || '',
-                c.position || '',
-                c.companyName || '',
-                c.location || '',
-                c.experience || '',
-                c.ctc || '',
-                c.expectedCtc || '',
-                c.noticePeriod || '',
-                c.fls || '',
-                c.status || '',
-                c.client || '',
-                c.spoc || '',
-                c.source || '',
-                c.callBackDate || ''
-              ]);
-              
-              // Create Excel workbook with proper formatting
-              const data = [headers, ...rows];
-              const ws = XLSX.utils.aoa_to_sheet(data);
-              
-              // Set column widths
-              const colWidths = [
-                { wch: 12 }, // SR No
-                { wch: 15 }, // Date
-                { wch: 18 }, // Name
-                { wch: 22 }, // Email
-                { wch: 14 }, // Contact
-                { wch: 16 }, // Position
-                { wch: 14 }, // Company
-                { wch: 14 }, // Location
-                { wch: 14 }, // Experience
-                { wch: 12 }, // CTC
-                { wch: 14 }, // Expected CTC
-                { wch: 16 }, // Notice Period
-                { wch: 10 }, // FLS
-                { wch: 12 }, // Status
-                { wch: 14 }, // Client
-                { wch: 12 }, // SPOC
-                { wch: 12 }, // Source
-                { wch: 14 }  // Call Back Date
-              ];
-              ws['!cols'] = colWidths;
-              
-              // Style header row
-              for (let i = 0; i < headers.length; i++) {
-                const cellRef = XLSX.utils.encode_cell({ r: 0, c: i });
-                ws[cellRef].s = {
-                  font: { bold: true, color: { rgb: 'FFFFFF' } },
-                  fill: { fgColor: { rgb: '0066CC' } },
-                  alignment: { horizontal: 'center', vertical: 'center' }
-                };
-              }
-              
-              // Format data cells - ensure Contact/Phone is text
-              for (let i = 1; i < data.length; i++) {
-                // Contact column (index 4) - force as text
-                const contactCell = XLSX.utils.encode_cell({ r: i, c: 4 });
-                if (ws[contactCell]) {
-                  ws[contactCell].t = 's'; // text type
-                  ws[contactCell].v = String(ws[contactCell].v);
-                }
-              }
-              
-              const wb = XLSX.utils.book_new();
-              XLSX.utils.book_append_sheet(wb, ws, 'Candidates');
-              XLSX.writeFile(wb, `candidates_${new Date().toISOString().split('T')[0]}.xlsx`);
-            }}
-            className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 transition shadow-md border border-emerald-700"
-          >
-            <Download size={20} /> Download Excel
-          </button>
+
         </div>
       </div>
 
       {/* ADVANCED SEARCH PANEL - ABOVE TABLE */}
       {showAdvancedSearch && (
-        <div className="mb-6 bg-white p-6 rounded-2xl shadow-lg border-2 border-blue-200">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-bold text-slate-800">Advanced Search Filters</h3>
+        <div className="mb-6 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+          <div className="flex justify-between items-center mb-5">
+            <h3 className="text-base font-bold text-gray-800">Advanced Search Filters</h3>
             <button
               onClick={() => {
                 setAdvancedSearchFilters({
@@ -1809,155 +2076,165 @@ const handleAddCandidate = async (e) => {
                   date: ''
                 });
                 setSearchQuery('');
-                setFilterJob('');
               }}
-              className="flex items-center gap-2 px-3 py-1.5 text-slate-600 hover:text-slate-800 border border-slate-300 rounded-lg text-sm font-medium transition hover:bg-slate-50"
+              className="flex items-center gap-2 px-3 py-1.5 text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg text-sm font-medium transition hover:bg-gray-50"
             >
-              <RefreshCw size={16} /> Reset
+              <RefreshCw size={14} /> Reset
             </button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* Position */}
+            {/* Position - Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Position</label>
-              <input
-                type="text"
-                name="position"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Position</label>
+              <select
                 value={advancedSearchFilters.position}
-                onChange={(e) => {
-                  setAdvancedSearchFilters(prev => ({ ...prev, position: e.target.value }));
-                  setFilterJob(e.target.value);
-                }}
-                placeholder="e.g., Developer, Manager"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, position: e.target.value }))}
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">All Positions</option>
+                {masterPositions.map(pos => (
+                  <option key={pos._id} value={pos.name}>{pos.name}</option>
+                ))}
+              </select>
             </div>
 
-            {/* Company */}
+            {/* Company - Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Company</label>
-              <input
-                type="text"
-                name="companyName"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Company</label>
+              <select
                 value={advancedSearchFilters.companyName}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, companyName: e.target.value }))}
-                placeholder="Company name"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">All Companies</option>
+                {masterCompanies.map(company => (
+                  <option key={company._id} value={company.name}>{company.name}</option>
+                ))}
+              </select>
             </div>
 
-            {/* Location */}
+            {/* Location - Text input */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Location</label>
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Location</label>
               <input
                 type="text"
-                name="location"
                 value={advancedSearchFilters.location}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, location: e.target.value }))}
                 placeholder="City or location"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
               />
             </div>
 
-            {/* Experience Min */}
+            {/* Experience Min - Number Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Min Experience (Yrs)</label>
-              <input
-                type="number"
-                name="expMin"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Min Experience (Yrs)</label>
+              <select
                 value={advancedSearchFilters.expMin}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, expMin: e.target.value }))}
-                placeholder="Min years"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">Any</option>
+                {[...Array(31).keys()].map(num => (
+                  <option key={num} value={num}>{num} {num === 1 ? 'year' : 'years'}</option>
+                ))}
+              </select>
             </div>
 
-            {/* Experience Max */}
+            {/* Experience Max - Number Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Max Experience (Yrs)</label>
-              <input
-                type="number"
-                name="expMax"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Max Experience (Yrs)</label>
+              <select
                 value={advancedSearchFilters.expMax}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, expMax: e.target.value }))}
-                placeholder="Max years"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">Any</option>
+                {[...Array(31).keys()].map(num => (
+                  <option key={num} value={num}>{num} {num === 1 ? 'year' : 'years'}</option>
+                ))}
+              </select>
             </div>
 
-            {/* CTC Min */}
+            {/* CTC Min - Range Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Min CTC</label>
-              <input
-                type="text"
-                name="ctcMin"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Min CTC</label>
+              <select
                 value={advancedSearchFilters.ctcMin}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, ctcMin: e.target.value }))}
-                placeholder="e.g., 5L"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">Any</option>
+                {ctcRanges.map(range => (
+                  <option key={range} value={range}>{range}</option>
+                ))}
+              </select>
             </div>
 
-            {/* CTC Max */}
+            {/* CTC Max - Range Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Max CTC</label>
-              <input
-                type="text"
-                name="ctcMax"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Max CTC</label>
+              <select
                 value={advancedSearchFilters.ctcMax}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, ctcMax: e.target.value }))}
-                placeholder="e.g., 10L"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">Any</option>
+                {ctcRanges.map(range => (
+                  <option key={range} value={range}>{range}</option>
+                ))}
+              </select>
             </div>
 
-            {/* Expected CTC Min */}
+            {/* Expected CTC Min - Range Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Min Expected CTC</label>
-              <input
-                type="text"
-                name="expectedCtcMin"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Min Expected CTC</label>
+              <select
                 value={advancedSearchFilters.expectedCtcMin}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, expectedCtcMin: e.target.value }))}
-                placeholder="e.g., 5L"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">Any</option>
+                {ctcRanges.map(range => (
+                  <option key={range} value={range}>{range}</option>
+                ))}
+              </select>
             </div>
 
-            {/* Expected CTC Max */}
+            {/* Expected CTC Max - Range Dropdown */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Max Expected CTC</label>
-              <input
-                type="text"
-                name="expectedCtcMax"
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Max Expected CTC</label>
+              <select
                 value={advancedSearchFilters.expectedCtcMax}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, expectedCtcMax: e.target.value }))}
-                placeholder="e.g., 10L"
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
+              >
+                <option value="">Any</option>
+                {ctcRanges.map(range => (
+                  <option key={range} value={range}>{range}</option>
+                ))}
+              </select>
             </div>
 
             {/* Date */}
             <div>
-              <label className="text-xs font-bold text-slate-600 uppercase">Date</label>
+              <label className="block text-sm font-bold text-gray-700 mb-1.5">Date</label>
               <input
                 type="date"
-                name="date"
                 value={advancedSearchFilters.date}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, date: e.target.value }))}
-                className="w-full mt-1.5 px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
               />
             </div>
           </div>
 
-          <p className="text-xs text-slate-500 mt-4">✨ Filters apply instantly to the candidate list below</p>
+          <p className="text-xs text-gray-400 mt-4">Filters apply instantly to the candidate list below</p>
         </div>
       )}
 
       {/* PARSING PREVIEW MODAL */}
       {showPreview && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl overflow-hidden">
             <div className="p-4 bg-indigo-600 text-white flex justify-between items-center">
               <h3 className="font-bold flex items-center gap-2"><Cpu size={20}/> Parsed Results</h3>
@@ -1965,7 +2242,7 @@ const handleAddCandidate = async (e) => {
             </div>
             <div className="p-6 overflow-auto max-h-[60vh]">
               <table className="w-full text-sm">
-                <thead><tr className="border-b text-left text-slate-500 font-bold"><th>Name</th><th>Email</th><th>Contact</th></tr></thead>
+                <thead><tr className="border-b text-left text-gray-500 font-bold"><th>Name</th><th>Email</th><th>Contact</th></tr></thead>
                 <tbody>
                   {parsedResults.map(p => (
                     <tr key={p._id} className="border-b">
@@ -1978,396 +2255,767 @@ const handleAddCandidate = async (e) => {
               </table>
             </div>
             <div className="p-4 border-t flex justify-end">
-              <button onClick={() => setShowPreview(false)} className="bg-slate-800 text-white px-6 py-2 rounded-lg font-bold">Close</button>
+              <button onClick={() => setShowPreview(false)} className="bg-gray-800 text-white px-6 py-2 rounded-lg font-bold">Close</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK ACTIONS BAR */}
+      {selectedIds.length > 0 && (
+        <div className="sticky top-0 z-30 bg-indigo-600 text-white rounded-xl shadow-lg px-5 py-3 flex items-center justify-between gap-4 mb-4 animate-in">
+          <div className="flex items-center gap-3">
+            <div className="bg-white/20 px-3 py-1 rounded-lg text-sm font-bold">
+              {selectedIds.length} selected
+            </div>
+            <button
+              onClick={() => setSelectedIds([])}
+              className="text-white/80 hover:text-white text-xs underline underline-offset-2 cursor-pointer"
+            >
+              Clear selection
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={startBulkEmailFlow}
+              className="flex items-center gap-1.5 px-4 py-2 bg-white/15 hover:bg-white/25 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+              title="Send bulk email"
+            >
+              <Mail size={15} /> Email
+            </button>
+            <button
+              onClick={handleBulkWhatsApp}
+              className="flex items-center gap-1.5 px-4 py-2 bg-white/15 hover:bg-white/25 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+              title="Send bulk WhatsApp"
+            >
+              <MessageCircle size={15} /> WhatsApp
+            </button>
+            <div className="relative group">
+              <button
+                className="flex items-center gap-1.5 px-4 py-2 bg-white/15 hover:bg-white/25 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+                title="Change status"
+              >
+                <RefreshCw size={15} /> Status
+              </button>
+              <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-lg shadow-xl border border-gray-200 py-1 hidden group-hover:block z-50">
+                {['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Joined', 'Rejected', 'Dropped'].map(s => (
+                  <button
+                    key={s}
+                    onClick={() => handleBulkStatusUpdate(s)}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={handleBulkDelete}
+              className="flex items-center gap-1.5 px-4 py-2 bg-red-500/80 hover:bg-red-500 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+              title="Delete selected"
+            >
+              <Trash2 size={15} /> Delete
+            </button>
           </div>
         </div>
       )}
 
       {/* MAIN TABLE */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-        <table className="w-full text-left border-collapse min-w-[2000px]">
+        <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="bg-emerald-50 text-slate-700 border-b-2 border-emerald-100">
-              <th className="p-4 w-[60px] min-w-[60px] sticky left-0 z-20 bg-emerald-50 border-r border-emerald-100">
-                <div onClick={() => selectAll(filteredCandidates.map(c => c._id))} className="cursor-pointer">
-                  {isAllSelected ? <CheckSquare size={22} className="text-indigo-600" /> : <Square size={22} className="text-slate-400" />}
+            <tr className="bg-gray-900 border-b border-gray-300">
+              <th className="px-4 py-4 w-[50px] text-center">
+                <div onClick={() => selectAll(filteredCandidates.map(c => c._id))} className="cursor-pointer flex justify-center">
+                  {isAllSelected ? <CheckSquare size={18} className="text-white" /> : <Square size={18} className="text-gray-400" />}
                 </div>
               </th>
-              {tableColumns.map((column, idx) => (
+              {tableColumns.map((column) => (
                 <th
                   key={column.key}
-                  className={`p-4 text-sm font-bold whitespace-nowrap${idx < 4 ? ' sticky z-20 bg-emerald-50 border-r border-emerald-100' : ''}`}
-                  style={getStickyHeaderStyle(idx)}
+                  className="px-4 py-4 text-xs font-bold text-white uppercase tracking-wider whitespace-nowrap border-r border-gray-700"
                 >
                   {column.label}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody>
-            {visibleCandidates.map((candidate,index) => (
-              <tr key={candidate._id} className="border-b hover:bg-slate-50 transition">
-                <td className="p-4 text-center sticky left-0 z-10 bg-white border-r border-slate-200" style={{ width: `${stickyColWidths.checkbox}px`, minWidth: `${stickyColWidths.checkbox}px` }}>
-                  <div onClick={() => toggleSelection(candidate._id)} className="cursor-pointer">
-                    {selectedIds.includes(candidate._id) ? <CheckSquare className="text-indigo-600" size={20} /> : <Square className="text-slate-300" size={20} />}
+          <tbody className="divide-y divide-slate-200">
+            {visibleCandidates.map((candidate, index) => (
+              <tr key={candidate._id} className={`transition-colors ${selectedIds.includes(candidate._id) ? 'bg-indigo-50/60' : index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'} hover:bg-indigo-50/40`}>
+                <td className="px-4 py-3 text-center w-[50px]">
+                  <div onClick={() => toggleSelection(candidate._id)} className="cursor-pointer flex justify-center">
+                    {selectedIds.includes(candidate._id) ? <CheckSquare className="text-indigo-600" size={17} /> : <Square className="text-gray-300 hover:text-gray-400" size={17} />}
                   </div>
                 </td>
-                {tableColumns.map((column, idx) => (
+                {tableColumns.map((column) => (
                   <td
                     key={`${candidate._id}-${column.key}`}
-                    className={`p-4${idx < 4 ? ' sticky z-10 bg-white border-r border-slate-200' : ''}`}
-                    style={getStickyBodyStyle(idx)}
+                    className="px-4 py-3 text-sm text-gray-700 border-r border-gray-200 font-medium"
                   >
                     {column.render(candidate, index)}
                   </td>
                 ))}
               </tr>
             ))}
+            {visibleCandidates.length === 0 && !isLoadingInitial && (
+              <tr>
+                <td colSpan={tableColumns.length + 1} className="text-center py-16 text-gray-400">
+                  <div className="flex flex-col items-center gap-2">
+                    <Search size={32} className="text-gray-300" />
+                    <p className="text-sm font-medium">No candidates found</p>
+                    <p className="text-xs">Try adjusting your search or filters</p>
+                  </div>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>             
 
-      {/* Sentinel for lazy-loading more rows + pagination */}
-      <div ref={loadMoreRef} className="w-full text-center py-6 text-sm text-gray-500">
-        All candidates loaded.
-      </div>
+      {/* Sentinel for lazy-loading more rows */}
+      <div ref={loadMoreRef} />
       
-      {/* ENHANCED PAGINATION DISPLAY */}
-      <div className="w-full py-8 px-4 flex justify-end">
-        <div className="flex gap-3">
+      {/* PAGINATION */}
+      <div className="flex items-center justify-between py-4 px-1">
+        <p className="text-xs text-gray-500">
+          Showing {visibleCandidates.length > 0 ? (currentPage - 1) * PAGE_SIZE + 1 : 0}–{Math.min(currentPage * PAGE_SIZE, filteredCandidates.length)} of {filteredCandidates.length.toLocaleString()} candidates
+        </p>
+        <div className="flex items-center gap-2">
             <button
               onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
               disabled={currentPage === 1}
-              className="px-6 py-3 bg-slate-300 text-slate-700 rounded-lg font-bold hover:bg-slate-400 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center gap-2"
+              className="px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
-              ← Previous
+              Previous
             </button>
-            
+            <div className="flex items-center gap-1">
+              {Array.from({ length: Math.min(5, totalFilteredPages) }, (_, i) => {
+                let page;
+                if (totalFilteredPages <= 5) page = i + 1;
+                else if (currentPage <= 3) page = i + 1;
+                else if (currentPage >= totalFilteredPages - 2) page = totalFilteredPages - 4 + i;
+                else page = currentPage - 2 + i;
+                return (
+                  <button
+                    key={page}
+                    onClick={() => setCurrentPage(page)}
+                    className={`w-9 h-9 rounded-lg text-sm font-medium transition ${page === currentPage ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100'}`}
+                  >
+                    {page}
+                  </button>
+                );
+              })}
+            </div>
             {currentPage < totalFilteredPages && (
               <button 
                 onClick={() => setCurrentPage(currentPage + 1)}
-                className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition flex items-center gap-2"
+                className="px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 transition"
               >
-                Next →
+                Next
               </button>
-            )}
-            
-            {currentPage === totalFilteredPages && totalFilteredPages > 0 && (
-              <div className="px-6 py-3 bg-green-100 text-green-700 rounded-lg font-bold text-sm">
-                ✅ End of Records
-              </div>
             )}
         </div>
       </div>
 
 {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto p-8 shadow-2xl">
-            <h2 className="text-2xl font-bold mb-6 text-slate-800">{editId ? '📝 Edit Profile' : '👤 Add New Candidate'}</h2>
+          <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-8 shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-gray-800">{editId ? '📝 Edit Profile' : '👤 Add New Candidate'}</h2>
+              <button type="button" onClick={() => setShowModal(false)} className="text-gray-400 hover:text-red-500 text-2xl font-bold transition-colors p-1 rounded-lg hover:bg-red-50">&times;</button>
+            </div>
             <form onSubmit={handleAddCandidate} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="col-span-full bg-slate-50 p-4 rounded-xl border-2 border-dashed border-slate-200">
-                   <label className="text-sm font-bold block mb-2 text-slate-600">Resume Upload (PDF/DOC)</label>
-                   <input type="file" name="resume" accept=".pdf,.doc,.docx" onChange={handleInputChange} className="w-full text-sm" />
-                </div>
-
-                {/* Yahan Mapping ho rahi hai (srNo aur contact ko yahan se hata diya hai) */}
-                {Object.keys(initialFormState).map(key => {
-                  if (['status', 'fls', 'resume', 'position', 'contact', 'srNo', 'source', 'ctc', 'expectedCtc', 'noticePeriod'].includes(key)) return null;
-                  return (
-                    <div key={key}>
-                      <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">{key.replace(/([A-Z])/g, ' $1')}</label>
-                      <input 
-                        type={key === 'date' ? 'date' : 'text'} 
-                        name={key} 
-                        className={`w-full p-2.5 bg-slate-50 border rounded-lg focus:ring-2 outline-none transition ${key === 'email' && formData.email && !formData.email.includes('@gmail.com') ? 'border-orange-500 ring-orange-200' : 'border-slate-200 ring-indigo-500/20'}`} 
-                        value={formData[key] || ''} 
-                        onChange={handleInputChange} 
-                      />
-                      {key === 'email' && formData.email && !formData.email.includes('@gmail.com') && (
-                        <p className="text-[9px] text-orange-600 font-bold mt-1 italic">Typo? check if it's @gmail.com</p>
-                      )}
+              
+              {/* Resume Upload */}
+              <div className="border-2 border-dashed border-blue-300 rounded-xl p-8 bg-blue-50 text-center hover:bg-blue-100 transition-colors cursor-pointer relative">
+                <input type="file" name="resume" accept=".pdf,.doc,.docx" onChange={handleInputChange} className="absolute inset-0 opacity-0 cursor-pointer" />
+                <div className="flex flex-col items-center gap-3">
+                  <Upload size={32} className="text-blue-600" />
+                  <p className="font-semibold text-gray-800 text-sm">Click to upload resume (PDF, DOC, DOCX)</p>
+                  {isAutoParsing && (
+                    <div className="flex items-center gap-2 text-blue-600 font-semibold text-sm">
+                      <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                      Parsing resume...
                     </div>
-                  )
-                })}
-                <div>
-  {/* Call Back Date Input Field */}
-<div>
-  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Call Back Date</label>
-  <input 
-    type="text" // 'date' ki jagah 'text' use karein agar aap "1 month" likhna chahti hain
-    name="callBackDate" 
-    placeholder="e.g. 25 Jan or 15 days"
-    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 ring-orange-500/20"
-    value={formData.callBackDate || ''} 
-    onChange={handleInputChange} 
-  />
-</div>
-</div>
-{/* --- STATUS DROPDOWN (Added manually) --- */}
-<div>
-  <label className="text-[10px] font-extrabold text-indigo-600 uppercase tracking-wider">Status</label>
-  <select 
-    name="status" 
-    value={formData.status || 'Applied'} 
-    onChange={handleInputChange} 
-    className="w-full p-2.5 bg-indigo-50 border border-indigo-200 rounded-lg outline-none font-bold text-indigo-700"
-  >
-    {['Applied', 'Screening', 'Interview', 'Offer', 'Joined', 'Rejected'].map(s => (
-      <option key={s} value={s}>{s}</option>
-    ))}
-  </select>
-</div>
-
-{/* --- JOINING DATE (Sirf tab dikhega jab Status 'Joined' hoga) --- */}
-{formData.status === 'Joined' && (
-  <div>
-    <label className="text-[10px] font-extrabold text-green-600 uppercase tracking-wider">Joining Date</label>
-    <input 
-      type="date" 
-      name="hiredDate" 
-      value={formData.hiredDate ? formData.hiredDate.split('T')[0] : ''} 
-      onChange={handleInputChange} 
-      className="w-full p-2.5 bg-green-50 border border-green-200 rounded-lg outline-none focus:ring-2 ring-green-500/20"
-      required={formData.status === 'Joined'}
-    />
-  </div>
-)}
-
-
-
-                {/* 1. Naya Phone Input (Mapping ke bahar lekin Grid ke andar) */}
-                <div className="flex flex-col">
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider mb-1">Contact Number</label>
-                  <PhoneInput
-                    country={'in'}
-                    value={formData.contact}
-                    onChange={(phone) => setFormData(prev => ({ ...prev, contact: phone }))}
-                    inputStyle={{ width: '100%', height: '42px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px' }}
-                    containerStyle={{ width: '100%' }}
-                  />
-                </div>
-
-                {/* 2. Position Dropdown */}
-                <div>
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Position</label>
-                  <select name="position" value={formData.position} onChange={handleInputChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg outline-none">
-                    <option value="">Select Role</option>
-                    {jobs.map(j => <option key={j._id} value={j.role}>{j.role}</option>)}
-                  </select>
-                </div>
-
-                {/* 3. Source of CV Dropdown */}
-                <div>
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Source of CV</label>
-                  <select name="source" value={formData.source} onChange={handleInputChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg outline-none">
-                    <option value="">Select Source</option>
-                    <option value="Shine">Shine</option>
-                    <option value="LinkedIn">LinkedIn</option>
-                    <option value="Naukri">Naukri</option>
-                    <option value="ATS">ATS</option>
-                    <option value="Others">Others</option>
-                  </select>
-                </div>
-
-                {/* 4. Current CTC Dropdown */}
-                <div>
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Current CTC</label>
-                  <select name="ctc" value={formData.ctc} onChange={handleInputChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg outline-none">
-                    <option value="">Select CTC</option>
-                    <option value="0-50k">0-50k</option>
-                    <option value="50k-1L">50k-1L</option>
-                    <option value="1L-1.5L">1L-1.5L</option>
-                    <option value="1.5L-2L">1.5L-2L</option>
-                    <option value="2L-2.5L">2L-2.5L</option>
-                    <option value="2.5L-3L">2.5L-3L</option>
-                    <option value="3L-3.5L">3L-3.5L</option>
-                    <option value="3.5L-4L">3.5L-4L</option>
-                    <option value="4L-4.5L">4L-4.5L</option>
-                    <option value="4.5L-5L">4.5L-5L</option>
-                    <option value="5L-5.5L">5L-5.5L</option>
-                    <option value="5.5L-6L">5.5L-6L</option>
-                    <option value="6L-8L">6L-8L</option>
-                    <option value="8L-9L">8L-9L</option>
-                    <option value="9L-10L">9L-10L</option>
-                    <option value="Above 10L">Above 10L</option>
-                  </select>
-                </div>
-
-                {/* 5. Expected CTC Dropdown */}
-                <div>
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Expected CTC</label>
-                  <select name="expectedCtc" value={formData.expectedCtc} onChange={handleInputChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg outline-none">
-                    <option value="">Select Expected CTC</option>
-                    <option value="0-50k">0-50k</option>
-                    <option value="50k-1L">50k-1L</option>
-                    <option value="1L-1.5L">1L-1.5L</option>
-                    <option value="1.5L-2L">1.5L-2L</option>
-                    <option value="2L-2.5L">2L-2.5L</option>
-                    <option value="2.5L-3L">2.5L-3L</option>
-                    <option value="3L-3.5L">3L-3.5L</option>
-                    <option value="3.5L-4L">3.5L-4L</option>
-                    <option value="4L-4.5L">4L-4.5L</option>
-                    <option value="4.5L-5L">4.5L-5L</option>
-                    <option value="5L-5.5L">5L-5.5L</option>
-                    <option value="5.5L-6L">5.5L-6L</option>
-                    <option value="6L-8L">6L-8L</option>
-                    <option value="8L-9L">8L-9L</option>
-                    <option value="9L-10L">9L-10L</option>
-                    <option value="Above 10L">Above 10L</option>
-                  </select>
-                </div>
-
-                {/* 6. Notice Period Dropdown */}
-                <div>
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Notice Period</label>
-                  <select name="noticePeriod" value={formData.noticePeriod} onChange={handleInputChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg outline-none">
-                    <option value="">Select Notice Period</option>
-                    <option value="Immediate Joiner">Immediate Joiner</option>
-                    <option value="1-15 days">1-15 days</option>
-                    <option value="16-30 days">16-30 days</option>
-                    <option value="30 to 60 days">30 to 60 days</option>
-                    <option value="60 to 90 days">60 to 90 days</option>
-                  </select>
+                  )}
+                  {formData.resume && (
+                    <p className="text-sm text-green-600 font-semibold">✅ {formData.resume.name || 'File selected'}</p>
+                  )}
                 </div>
               </div>
 
-              <div className="flex gap-4 pt-4 border-t">
-                <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
-                <button type="submit" className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-lg transition">Save Candidate</button>
+              {/* 📋 Basic Information */}
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4 pb-3 border-b-2 border-indigo-500">📋 Basic Information</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Name <span className="text-red-500">*</span></label>
+                    <input ref={fieldRefs.name} type="text" name="name" value={formData.name || ''} onChange={handleInputChange} placeholder="Full Name"
+                      className={`w-full px-4 py-2.5 border-2 rounded-lg focus:ring-2 focus:outline-none transition-all text-sm font-medium ${formErrors.name ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-100'}`} />
+                    {formErrors.name && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.name}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Email <span className="text-red-500">*</span></label>
+                    <input ref={fieldRefs.email} type="email" name="email" value={formData.email || ''} onChange={handleInputChange} placeholder="email@example.com"
+                      className={`w-full px-4 py-2.5 border-2 rounded-lg focus:ring-2 focus:outline-none transition-all text-sm font-medium ${formErrors.email ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-100'}`} />
+                    {formErrors.email && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.email}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Contact <span className="text-red-500">*</span></label>
+                    <div className={`flex w-full items-stretch border-2 rounded-lg focus-within:ring-2 focus-within:outline-none transition-all bg-white overflow-hidden ${formErrors.contact ? 'border-red-400 focus-within:border-red-500 focus-within:ring-red-200 bg-red-50' : 'border-gray-300 focus-within:border-indigo-500 focus-within:ring-indigo-100'}`}>
+                      <select
+                        className="px-3 py-2.5 bg-white text-sm font-semibold min-w-[92px] border-r border-gray-300 outline-none"
+                        value={countryCode}
+                        onChange={(e) => {
+                          setCountryCode(e.target.value);
+                          setFormData(prev => ({ ...prev, countryCode: e.target.value }));
+                        }}
+                      >
+                        {countryCodes.map(c => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}
+                      </select>
+                      <input ref={fieldRefs.contact} type="tel" name="contact" value={formData.contact || ''} placeholder="1234567890"
+                        onChange={(e) => {
+                          let digitsOnly = e.target.value.replace(/\D/g, '');
+                          if (digitsOnly.length > 15) digitsOnly = digitsOnly.slice(0, 15);
+                          setFormData(prev => ({ ...prev, contact: digitsOnly }));
+                          if (formErrors.contact) setFormErrors(prev => ({ ...prev, contact: '' }));
+                        }}
+                        className="flex-1 px-4 py-2.5 text-sm outline-none font-medium" maxLength="15" />
+                    </div>
+                    {formErrors.contact && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.contact}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Position</label>
+                    <select name="position" value={formData.position || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select Position</option>
+                      {masterPositions.map(pos => <option key={pos._id} value={pos.name}>{pos.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Company</label>
+                    <select name="companyName" value={formData.companyName || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select Company</option>
+                      {masterCompanies.map(company => <option key={company._id} value={company.name}>{company.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Location</label>
+                    <input ref={fieldRefs.location} type="text" name="location" value={formData.location || ''} onChange={handleInputChange} placeholder="City/Region"
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 💼 Experience & Compensation */}
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4 pb-3 border-b-2 border-indigo-500">💼 Experience & Compensation</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Experience (Years)</label>
+                    <select name="experience" value={formData.experience || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select</option>
+                      {[...Array(31).keys()].slice(1).map(num => <option key={num} value={num}>{num}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Current CTC (LPA) <span className="text-red-500">*</span></label>
+                    <select ref={fieldRefs.ctc} name="ctc" value={formData.ctc || ''} onChange={handleInputChange}
+                      className={`w-full px-4 py-2.5 border-2 rounded-lg focus:ring-2 focus:outline-none transition-all text-sm font-medium ${formErrors.ctc ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-100'}`}>
+                      <option value="">Select CTC</option>
+                      {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
+                    </select>
+                    {formErrors.ctc && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.ctc}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Expected CTC (LPA)</label>
+                    <select name="expectedCtc" value={formData.expectedCtc || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select Expected CTC</option>
+                      {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Notice Period</label>
+                    <select name="noticePeriod" value={formData.noticePeriod || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select Notice Period</option>
+                      <option value="Immediate">Immediate</option>
+                      <option value="30 days">30 days</option>
+                      <option value="60 days">60 days</option>
+                      <option value="90 days">90 days</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">FLS/Non FLS</label>
+                    <select name="fls" value={formData.fls || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select</option>
+                      <option value="FLS">FLS</option>
+                      <option value="Non-FLS">Non-FLS</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Status</label>
+                    <select name="status" value={formData.status || 'Applied'} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="Applied">Applied</option>
+                      <option value="Screening">Screening</option>
+                      <option value="Interview">Interview</option>
+                      <option value="Offer">Offer</option>
+                      <option value="Hired">Hired</option>
+                      <option value="Joined">Joined</option>
+                      <option value="Dropped">Dropped</option>
+                      <option value="Rejected">Rejected</option>
+                      <option value="Interested">Interested</option>
+                      <option value="Interested and scheduled">Interested and scheduled</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* 📝 Additional Information */}
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4 pb-3 border-b-2 border-indigo-500">📝 Additional Information</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Client</label>
+                    <select name="client" value={formData.client || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select Client</option>
+                      {masterClients.map(client => <option key={client._id} value={client.name}>{client.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">SPOC</label>
+                    <input ref={fieldRefs.spoc} type="text" name="spoc" value={formData.spoc || ''} onChange={handleInputChange} placeholder="SPOC Name"
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Source of CV</label>
+                    <select name="source" value={formData.source || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      <option value="">Select Source</option>
+                      {masterSources.map(source => <option key={source._id} value={source.name}>{source.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Date</label>
+                    <input type="date" name="date" value={formData.date || new Date().toISOString().split('T')[0]} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Call Back Date</label>
+                    <input type="date" name="callBackDate" value={formData.callBackDate || ''} onChange={handleInputChange}
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Comment</label>
+                    <input type="text" name="srNo" value={formData.srNo || ''} onChange={handleInputChange} placeholder="Optional comment"
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
+                  </div>
+                  <div className="md:col-span-2 lg:col-span-3">
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Remark</label>
+                    <textarea name="remark" value={formData.remark || ''} onChange={handleInputChange} placeholder="e.g. Rejected due to salary mismatch, Not reachable, etc."
+                      rows="2" className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium resize-none" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer Buttons */}
+              <div className="flex gap-3 pt-6 border-t-2 border-gray-200 justify-center">
+                <button type="button" onClick={() => setShowModal(false)}
+                  className="px-8 py-2.5 bg-gray-100 text-gray-700 font-semibold rounded-lg hover:bg-gray-200 transition-all text-sm min-w-[120px]">
+                  Cancel
+                </button>
+                <button type="submit"
+                  className="px-8 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition-all text-sm min-w-[160px]">
+                  {editId ? 'Save Changes' : 'Add Candidate'}
+                </button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* 📧 EMAIL MODAL */}
+      {/* 📧 EMAIL MODAL — Template-Powered */}
       {showEmailModal && emailRecipient && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] shadow-2xl flex flex-col">
-            <div className="flex justify-between items-center mb-6 p-8 border-b">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                <Mail className="text-indigo-600" size={28} />
-                Send Email
-              </h2>
-              <button onClick={() => setShowEmailModal(false)} className="p-2 hover:bg-slate-100 rounded-lg transition">
-                <X size={24} />
+          <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] shadow-2xl flex flex-col">
+            {/* Header */}
+            <div className="flex justify-between items-center px-6 py-4 border-b border-gray-200 bg-gray-50/80 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-indigo-100 flex items-center justify-center">
+                  <Mail className="text-indigo-600" size={18} />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">Send Email</h2>
+                  <p className="text-xs text-gray-500">To: {emailRecipient.name} ({emailRecipient.email})</p>
+                </div>
+              </div>
+              <button onClick={() => setShowEmailModal(false)} className="p-2 hover:bg-gray-200 rounded-lg transition">
+                <X size={18} className="text-gray-500" />
               </button>
             </div>
 
-            <div className="overflow-y-auto flex-1 px-8">
+            <div className="overflow-y-auto flex-1 px-6 py-4">
               <div className="space-y-4">
-                {/* Recipient Info */}
-                <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200">
-                  <p className="text-sm text-indigo-600 font-bold mb-2">RECIPIENT</p>
-                  <p className="text-lg font-bold text-slate-800">{emailRecipient.name}</p>
-                  <p className="text-sm text-slate-600">{emailRecipient.email}</p>
-                  <p className="text-sm text-slate-500">Position: {emailRecipient.position}</p>
+
+                {/* Mode Toggle */}
+                <div className="flex gap-2 p-1 bg-gray-100 rounded-lg w-fit">
+                  <button
+                    onClick={() => { setEmailMode('template'); setSelectedTemplate(null); }}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${emailMode === 'template' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  >Use Template</button>
+                  <button
+                    onClick={() => setEmailMode('quick')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${emailMode === 'quick' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  >Quick Send</button>
                 </div>
 
-                {/* Email Type Selection */}
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Email Type</label>
-                  <select 
-                    value={emailType} 
-                    onChange={(e) => setEmailType(e.target.value)}
-                    className="w-full p-3 border-2 border-slate-200 rounded-lg focus:ring-2 ring-indigo-500 outline-none"
-                  >
-                    <option value="interview">📞 Interview Invitation</option>
-                    <option value="rejection">❌ Rejection Letter</option>
-                    <option value="document">📄 Document Request</option>
-                    <option value="onboarding">🎯 Onboarding Welcome</option>
-                    <option value="custom">✏️ Custom Message</option>
-                  </select>
-                </div>
+                {/* ═══ TEMPLATE MODE ═══ */}
+                {emailMode === 'template' && (
+                  <>
+                    {/* Template Selection */}
+                    {!selectedTemplate ? (
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-2">Choose a Template</label>
+                        {emailTemplates.length === 0 ? (
+                          <div className="text-center py-8 bg-gray-50 rounded-lg border border-gray-200">
+                            <Mail size={24} className="text-gray-300 mx-auto mb-2" />
+                            <p className="text-xs text-gray-500">Loading templates...</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-64 overflow-y-auto">
+                            {emailTemplates.map(t => {
+                              const catColors = {
+                                hiring: 'border-indigo-200 bg-indigo-50/50', interview: 'border-cyan-200 bg-cyan-50/50',
+                                rejection: 'border-red-200 bg-red-50/50', onboarding: 'border-green-200 bg-green-50/50',
+                                document: 'border-amber-200 bg-amber-50/50', custom: 'border-purple-200 bg-purple-50/50'
+                              };
+                              const catIcons = { hiring: '💼', interview: '📞', rejection: '❌', onboarding: '🎉', document: '📄', custom: '✏️' };
+                              return (
+                                <button
+                                  key={t._id}
+                                  onClick={() => selectEmailTemplate(t)}
+                                  className={`text-left p-3 rounded-lg border-2 hover:shadow-sm transition-all ${catColors[t.category] || catColors.custom}`}
+                                >
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-sm">{catIcons[t.category] || '✏️'}</span>
+                                    <h4 className="text-xs font-bold text-gray-900 truncate">{t.name}</h4>
+                                  </div>
+                                  <p className="text-[10px] text-gray-500 line-clamp-2">{t.subject}</p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        {/* Selected template header */}
+                        <div className="flex items-center justify-between bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2.5">
+                          <div>
+                            <p className="text-xs font-bold text-indigo-700">{selectedTemplate.name}</p>
+                            <p className="text-[10px] text-indigo-500">{selectedTemplate.subject}</p>
+                          </div>
+                          <button onClick={() => setSelectedTemplate(null)} className="text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 px-2 py-1 hover:bg-indigo-100 rounded">
+                            Change
+                          </button>
+                        </div>
 
-                {/* CC Input */}
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">📋 CC (Optional)</label>
-                  <input
-                    type="text"
-                    value={emailCC}
-                    onChange={(e) => setEmailCC(e.target.value)}
-                    placeholder="email1@example.com, email2@example.com"
-                    className="w-full p-3 border-2 border-slate-200 rounded-lg focus:ring-2 ring-indigo-500 outline-none text-sm"
-                  />
-                  <p className="text-xs text-slate-500 mt-1">Comma-separated email addresses</p>
-                </div>
+                        {/* Variable Inputs */}
+                        {selectedTemplate.variables && selectedTemplate.variables.length > 0 && (
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-2">Fill Template Details</label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              {selectedTemplate.variables.map(v => {
+                                const labels = {
+                                  candidateName: 'Candidate Name', position: 'Position / Role', company: 'Company Name',
+                                  ctc: 'CTC / Salary', experience: 'Experience Required', location: 'Location',
+                                  date: 'Date', time: 'Time', venue: 'Venue / Address', spoc: 'SPOC Name'
+                                };
+                                return (
+                                  <div key={v}>
+                                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">{labels[v] || v}</label>
+                                    {v === 'time' ? (
+                                      <select
+                                        value={(() => { const t = templateVars[v]; if (!t) return ''; const m = t.match(/(\d+):(\d+)\s*(AM|PM)/i); if (!m) return ''; let h = parseInt(m[1]); const ampm = m[3].toUpperCase(); if (ampm === 'PM' && h !== 12) h += 12; if (ampm === 'AM' && h === 12) h = 0; return `${String(h).padStart(2,'0')}:${m[2]}`; })()}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          if (val) {
+                                            const [h, m] = val.split(':');
+                                            const hr = parseInt(h);
+                                            const ampm = hr >= 12 ? 'PM' : 'AM';
+                                            const hr12 = hr % 12 || 12;
+                                            setTemplateVars(prev => ({ ...prev, [v]: `${hr12}:${m} ${ampm}` }));
+                                          } else {
+                                            setTemplateVars(prev => ({ ...prev, [v]: '' }));
+                                          }
+                                        }}
+                                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                                      >
+                                        <option value="">Select time</option>
+                                        {Array.from({ length: 48 }, (_, i) => { const h = Math.floor(i / 2); const m = i % 2 === 0 ? '00' : '30'; const ampm = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return <option key={i} value={`${String(h).padStart(2,'0')}:${m}`}>{`${h12}:${m} ${ampm}`}</option>; })}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type={v === 'date' ? 'date' : 'text'}
+                                        value={templateVars[v] || ''}
+                                        onChange={(e) => setTemplateVars(prev => ({ ...prev, [v]: e.target.value }))}
+                                        placeholder={labels[v] || v}
+                                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                                      />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
 
-                {/* BCC Input */}
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">🔒 BCC (Optional)</label>
-                  <input
-                    type="text"
-                    value={emailBCC}
-                    onChange={(e) => setEmailBCC(e.target.value)}
-                    placeholder="email1@example.com, email2@example.com"
-                    className="w-full p-3 border-2 border-slate-200 rounded-lg focus:ring-2 ring-indigo-500 outline-none text-sm"
-                  />
-                  <p className="text-xs text-slate-500 mt-1">Comma-separated email addresses (hidden from other recipients)</p>
-                </div>
-
-                {/* Custom Message (only for custom type) */}
-                {emailType === 'custom' && (
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">Custom Message</label>
-                    <textarea
-                      value={customMessage}
-                      onChange={(e) => setCustomMessage(e.target.value)}
-                      placeholder="Enter your custom message here..."
-                      rows={6}
-                      className="w-full p-3 border-2 border-slate-200 rounded-lg focus:ring-2 ring-indigo-500 outline-none resize-none"
-                    />
-                  </div>
+                        {/* Live Preview */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-2">Email Preview</label>
+                          <div className="border border-gray-200 rounded-xl overflow-hidden">
+                            <div className="bg-indigo-600 px-4 py-2.5">
+                              <p className="text-white text-xs font-semibold">
+                                {(() => {
+                                  let subj = selectedTemplate.subject;
+                                  Object.entries(templateVars).forEach(([k, v]) => { subj = subj.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v || `{{${k}}}`); });
+                                  return subj;
+                                })()}
+                              </p>
+                            </div>
+                            <div className="p-4 bg-white max-h-48 overflow-y-auto">
+                              <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-line">
+                                {(() => {
+                                  let body = selectedTemplate.body;
+                                  Object.entries(templateVars).forEach(([k, v]) => { body = body.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v || `{{${k}}}`); });
+                                  return body;
+                                })()}
+                              </div>
+                            </div>
+                            <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 text-center">
+                              <p className="text-[9px] text-gray-400">Sent via SkillNix PCHR</p>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </>
                 )}
 
-                {/* Preview */}
-                <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                  <p className="text-xs font-bold text-slate-500 mb-2">EMAIL PREVIEW</p>
-                  {emailType === 'interview' && (
-                    <p className="text-sm text-slate-700">Will send interview invitation to {emailRecipient.name} for {emailRecipient.position} position.</p>
-                  )}
-                  {emailType === 'rejection' && (
-                    <p className="text-sm text-slate-700">Will send rejection letter to {emailRecipient.name} regarding {emailRecipient.position} position.</p>
-                  )}
-                  {emailType === 'document' && (
-                    <p className="text-sm text-slate-700">Will request documents from {emailRecipient.name} for {emailRecipient.position} position.</p>
-                  )}
-                  {emailType === 'onboarding' && (
-                    <p className="text-sm text-slate-700">Will send onboarding welcome to {emailRecipient.name} for {emailRecipient.position} position.</p>
-                  )}
-                  {emailType === 'custom' && (
-                    <p className="text-sm text-slate-700">Will send custom message to {emailRecipient.name}.</p>
-                  )}
+                {/* ═══ QUICK SEND MODE ═══ */}
+                {emailMode === 'quick' && (
+                  <>
+                    {/* Email Type */}
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5">Email Type</label>
+                      <select
+                        value={emailType}
+                        onChange={(e) => { setEmailType(e.target.value); setShowQuickPreview(false); }}
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                      >
+                        <option value="interview">📞 Interview Invitation</option>
+                        <option value="rejection">❌ Rejection Letter</option>
+                        <option value="document">📄 Document Request</option>
+                        <option value="onboarding">🎯 Onboarding Welcome</option>
+                        <option value="custom">✏️ Custom Message</option>
+                      </select>
+                    </div>
+
+                    {/* Editable Candidate Fields */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-500 mb-1">Candidate Name</label>
+                        <input
+                          type="text"
+                          value={quickName}
+                          onChange={(e) => { setQuickName(e.target.value); setShowQuickPreview(false); }}
+                          placeholder="Candidate name"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-500 mb-1">Position / Role</label>
+                        <input
+                          type="text"
+                          value={quickPosition}
+                          onChange={(e) => { setQuickPosition(e.target.value); setShowQuickPreview(false); }}
+                          placeholder="Position applied for"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Onboarding-specific fields */}
+                    {emailType === 'onboarding' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] font-semibold text-gray-500 mb-1">Department</label>
+                          <input
+                            type="text"
+                            value={quickDepartment}
+                            onChange={(e) => { setQuickDepartment(e.target.value); setShowQuickPreview(false); }}
+                            placeholder="e.g. Engineering, HR, Sales"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-gray-500 mb-1">Joining Date</label>
+                          <input
+                            type="date"
+                            value={quickJoiningDate}
+                            onChange={(e) => { setQuickJoiningDate(e.target.value); setShowQuickPreview(false); }}
+                            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Custom Message */}
+                    {emailType === 'custom' && (
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1.5">Custom Message</label>
+                        <textarea
+                          value={customMessage}
+                          onChange={(e) => { setCustomMessage(e.target.value); setShowQuickPreview(false); }}
+                          placeholder="Enter your custom message here..."
+                          rows={4}
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none resize-none"
+                        />
+                      </div>
+                    )}
+
+                    {/* Preview Toggle */}
+                    <div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (showQuickPreview) {
+                            setShowQuickPreview(false);
+                            return;
+                          }
+                          setLoadingPreview(true);
+                          try {
+                            const resp = await authenticatedFetch(`${BASE_API_URL}/api/email/preview`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                name: quickName || emailRecipient?.name || 'Candidate',
+                                position: quickPosition || emailRecipient?.position || 'Position',
+                                emailType,
+                                customMessage,
+                                department: quickDepartment || 'N/A',
+                                joiningDate: quickJoiningDate || 'TBD'
+                              })
+                            });
+                            const data = await resp.json();
+                            if (data.success) {
+                              setQuickPreviewHtml(data.html);
+                              setQuickPreviewSubject(data.subject);
+                              setShowQuickPreview(true);
+                            } else {
+                              toast.error('Failed to load preview');
+                            }
+                          } catch (err) {
+                            console.error('Preview error:', err);
+                            toast.error('Failed to generate preview');
+                          } finally {
+                            setLoadingPreview(false);
+                          }
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg border transition-all
+                          ${showQuickPreview ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'}"
+                        disabled={loadingPreview}
+                      >
+                        {loadingPreview ? (
+                          <><div className="animate-spin h-3.5 w-3.5 border-2 border-indigo-500 border-t-transparent rounded-full" /> Generating...</>
+                        ) : (
+                          <><Eye size={14} /> {showQuickPreview ? 'Hide Preview' : 'Preview Email'}</>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Live Preview Panel */}
+                    {showQuickPreview && quickPreviewHtml && (
+                      <div className="border border-gray-200 rounded-xl overflow-hidden">
+                        <div className="bg-indigo-600 px-4 py-2.5 flex items-center justify-between">
+                          <p className="text-white text-xs font-semibold">{quickPreviewSubject}</p>
+                          <span className="text-[9px] bg-white/20 text-white px-2 py-0.5 rounded-full">Preview</span>
+                        </div>
+                        <div className="bg-white">
+                          <iframe
+                            srcDoc={quickPreviewHtml}
+                            title="Email Preview"
+                            className="w-full border-0"
+                            style={{ height: '260px' }}
+                            sandbox=""
+                          />
+                        </div>
+                        <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                          <p className="text-[9px] text-gray-400">Sent via SkillNix PCHR</p>
+                          <p className="text-[9px] text-gray-400">To: {emailRecipient?.email}</p>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* CC / BCC (shared) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">CC (Optional)</label>
+                    <input
+                      type="text"
+                      value={emailCC}
+                      onChange={(e) => setEmailCC(e.target.value)}
+                      placeholder="email1@example.com, email2@example.com"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">BCC (Optional)</label>
+                    <input
+                      type="text"
+                      value={emailBCC}
+                      onChange={(e) => setEmailBCC(e.target.value)}
+                      placeholder="email1@example.com"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
 
             {/* Action Buttons */}
-            <div className="flex gap-4 p-8 border-t bg-white">
+            <div className="flex gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50/80 flex-shrink-0">
               <button
                 type="button"
                 onClick={() => setShowEmailModal(false)}
-                className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition"
+                className="flex-1 py-2.5 bg-gray-100 text-gray-700 font-semibold rounded-lg hover:bg-gray-200 transition text-sm"
                 disabled={isSendingEmail}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={sendSingleEmail}
-                disabled={isSendingEmail || (emailType === 'custom' && !customMessage.trim())}
-                className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                onClick={emailMode === 'template' ? sendTemplateEmail : sendSingleEmail}
+                disabled={isSendingEmail || (emailMode === 'template' && !selectedTemplate) || (emailMode === 'quick' && emailType === 'custom' && !customMessage.trim())}
+                className="flex-1 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-sm"
               >
                 {isSendingEmail ? (
                   <>
-                    <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full" />
+                    <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
                     Sending...
                   </>
                 ) : (
                   <>
-                    <Mail size={18} />
+                    <Mail size={16} />
                     Send Email
                   </>
                 )}
@@ -2382,17 +3030,17 @@ const handleAddCandidate = async (e) => {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm overflow-y-auto">
           <div className="bg-white rounded-2xl w-full max-w-6xl p-8 shadow-2xl my-8">
             <div className="flex justify-between items-center mb-6 sticky top-0 bg-white z-10">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                 <AlertCircle className="text-red-600" size={28} />
                 Duplicate Records ({duplicateRecords.length})
               </h2>
-              <button onClick={() => setShowDuplicatesModal(false)} className="p-2 hover:bg-slate-100 rounded-lg transition">
+              <button onClick={() => setShowDuplicatesModal(false)} className="p-2 hover:bg-gray-100 rounded-lg transition">
                 <X size={24} />
               </button>
             </div>
 
             <div className="space-y-2">
-              <p className="text-sm text-slate-600 mb-4">These records were detected as duplicates and were not imported:</p>
+              <p className="text-sm text-gray-600 mb-4">These records were detected as duplicates and were not imported:</p>
               
               {/* Duplicates Table */}
               <div className="overflow-x-auto border-2 border-red-200 rounded-lg">
@@ -2411,12 +3059,12 @@ const handleAddCandidate = async (e) => {
                   <tbody>
                     {duplicateRecords.map((record, idx) => (
                       <tr key={idx} className="border-b border-red-100 hover:bg-red-50 transition">
-                        <td className="px-4 py-3 font-semibold text-slate-700">{record.row}</td>
-                        <td className="px-4 py-3 text-slate-700">{record.name}</td>
-                        <td className="px-4 py-3 text-slate-700 font-mono text-xs">{record.email}</td>
-                        <td className="px-4 py-3 text-slate-700 font-mono text-xs">{record.contact}</td>
-                        <td className="px-4 py-3 text-slate-700">{record.position}</td>
-                        <td className="px-4 py-3 text-slate-700">{record.company}</td>
+                        <td className="px-4 py-3 font-semibold text-gray-700">{record.row}</td>
+                        <td className="px-4 py-3 text-gray-700">{record.name}</td>
+                        <td className="px-4 py-3 text-gray-700 font-mono text-xs">{record.email}</td>
+                        <td className="px-4 py-3 text-gray-700 font-mono text-xs">{record.contact}</td>
+                        <td className="px-4 py-3 text-gray-700">{record.position}</td>
+                        <td className="px-4 py-3 text-gray-700">{record.company}</td>
                         <td className="px-4 py-3">
                           <span className="inline-flex items-center gap-1 bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap">
                             🔄 {record.reason}
@@ -2442,7 +3090,7 @@ const handleAddCandidate = async (e) => {
                 <button
                   type="button"
                   onClick={() => setShowDuplicatesModal(false)}
-                  className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition"
+                  className="flex-1 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition"
                 >
                   Close
                 </button>
@@ -2456,7 +3104,7 @@ const handleAddCandidate = async (e) => {
                       )
                     ).join('\n');
                     navigator.clipboard.writeText(csv);
-                    alert('✅ Duplicates copied to clipboard as CSV');
+                    toast.success('Duplicates copied to clipboard as CSV');
                   }}
                   className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-lg transition"
                 >
@@ -2473,17 +3121,17 @@ const handleAddCandidate = async (e) => {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm overflow-y-auto">
           <div className="bg-white rounded-2xl w-full max-w-6xl p-8 shadow-2xl my-8">
             <div className="flex justify-between items-center mb-6 sticky top-0 bg-white z-10">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                 <RefreshCw className="text-green-600" size={28} />
                 Field Corrections ({correctionRecords.length})
               </h2>
-              <button onClick={() => setShowCorrectionsModal(false)} className="p-2 hover:bg-slate-100 rounded-lg transition">
+              <button onClick={() => setShowCorrectionsModal(false)} className="p-2 hover:bg-gray-100 rounded-lg transition">
                 <X size={24} />
               </button>
             </div>
 
             <div className="space-y-2">
-              <p className="text-sm text-slate-600 mb-4">🎯 These records had misaligned fields (e.g., email in wrong column) that were automatically corrected:</p>
+              <p className="text-sm text-gray-600 mb-4">🎯 These records had misaligned fields (e.g., email in wrong column) that were automatically corrected:</p>
               
               {/* Corrections Table */}
               <div className="overflow-x-auto border-2 border-green-200 rounded-lg">
@@ -2500,10 +3148,10 @@ const handleAddCandidate = async (e) => {
                   <tbody>
                     {correctionRecords.map((record, idx) => (
                       <tr key={idx} className="border-b border-green-100 hover:bg-green-50 transition">
-                        <td className="px-4 py-3 font-semibold text-slate-700">{record.row}</td>
-                        <td className="px-4 py-3 text-slate-700">{record.name}</td>
-                        <td className="px-4 py-3 text-slate-700 font-mono text-xs bg-green-50 p-2 rounded">{record.email}</td>
-                        <td className="px-4 py-3 text-slate-700 font-mono text-xs bg-green-50 p-2 rounded">{record.contact}</td>
+                        <td className="px-4 py-3 font-semibold text-gray-700">{record.row}</td>
+                        <td className="px-4 py-3 text-gray-700">{record.name}</td>
+                        <td className="px-4 py-3 text-gray-700 font-mono text-xs bg-green-50 p-2 rounded">{record.email}</td>
+                        <td className="px-4 py-3 text-gray-700 font-mono text-xs bg-green-50 p-2 rounded">{record.contact}</td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
                             {record.corrections.map((correction, cIdx) => (
@@ -2535,7 +3183,7 @@ const handleAddCandidate = async (e) => {
                 <button
                   type="button"
                   onClick={() => setShowCorrectionsModal(false)}
-                  className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition"
+                  className="flex-1 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition"
                 >
                   Close
                 </button>
@@ -2549,7 +3197,7 @@ const handleAddCandidate = async (e) => {
                       )
                     ).join('\n');
                     navigator.clipboard.writeText(csv);
-                    alert('✅ Field corrections copied to clipboard as CSV');
+                    toast.success('Field corrections copied to clipboard as CSV');
                   }}
                   className="flex-1 py-3 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 shadow-lg transition"
                 >
@@ -2570,274 +3218,134 @@ const handleAddCandidate = async (e) => {
             {bulkEmailStep === 'select' && (
               <div>
                 {/* Header */}
-                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-8 rounded-t-2xl">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <h2 className="text-3xl font-bold mb-2">📧 Bulk Email Manager</h2>
-                      <p className="text-indigo-100">Send professional emails to multiple candidates</p>
-                    </div>
-                    <button 
-                      onClick={closeBulkEmailFlow}
-                      className="p-2 hover:bg-white hover:bg-opacity-20 rounded-lg transition"
-                    >
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">Bulk Email Manager</h2>
+                    <p className="text-sm text-gray-500 mt-0.5">Send professional emails to multiple candidates</p>
                   </div>
+                  <button 
+                    onClick={closeBulkEmailFlow}
+                    className="p-2 hover:bg-gray-100 rounded-lg transition text-gray-500 hover:text-gray-700"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
 
-                <div className="p-8">
+                <div className="p-6">
                   {/* Email Type Selection */}
-                  <div className="mb-8 bg-gradient-to-br from-slate-50 to-indigo-50 border-2 border-indigo-200 rounded-xl p-6 shadow-sm">
-                    <h3 className="text-xl font-bold mb-4 text-slate-800 flex items-center gap-2">
-                      <span className="text-2xl">📋</span> Step 1: Select Email Type
+                  <div className="mb-6">
+                    <h3 className="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      Step 1: Select Email Type
                     </h3>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                      <label className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all transform hover:scale-105 ${
-                        emailType === 'interview' 
-                          ? 'border-indigo-600 bg-gradient-to-br from-indigo-50 to-purple-50 shadow-lg' 
-                          : 'border-slate-300 bg-white hover:border-indigo-400 hover:shadow-md'
-                      }`}>
-                        <input 
-                          type="radio" 
-                          name="emailType" 
-                          value="interview" 
-                          checked={emailType === 'interview'} 
-                          onChange={(e) => setEmailType(e.target.value)}
-                          className="absolute opacity-0"
-                        />
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">📞</div>
-                          <div className={`font-semibold ${emailType === 'interview' ? 'text-indigo-700' : 'text-slate-700'}`}>
-                            Interview Call
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {[
+                        { value: 'interview', label: 'Interview Call', icon: '📞' },
+                        { value: 'offer', label: 'Offer Letter', icon: '💼' },
+                        { value: 'rejection', label: 'Rejection', icon: '❌' },
+                        { value: 'document', label: 'Documents', icon: '📄' },
+                        { value: 'onboarding', label: 'Onboarding', icon: '🎯' },
+                        { value: 'custom', label: 'Custom', icon: '✏️' },
+                      ].map((opt) => (
+                        <label key={opt.value} className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all ${
+                          emailType === opt.value
+                            ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-500'
+                            : 'border-gray-200 bg-white hover:border-gray-300'
+                        }`}>
+                          <input
+                            type="radio"
+                            name="emailType"
+                            value={opt.value}
+                            checked={emailType === opt.value}
+                            onChange={(e) => setEmailType(e.target.value)}
+                            className="absolute opacity-0"
+                          />
+                          <div className="text-center">
+                            <div className="text-2xl mb-1.5">{opt.icon}</div>
+                            <div className={`text-sm font-semibold ${emailType === opt.value ? 'text-indigo-700' : 'text-gray-700'}`}>
+                              {opt.label}
+                            </div>
                           </div>
-                        </div>
-                        {emailType === 'interview' && (
-                          <div className="absolute top-2 right-2 bg-indigo-600 text-white rounded-full w-6 h-6 flex items-center justify-center">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                      </label>
-
-                      <label className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all transform hover:scale-105 ${
-                        emailType === 'offer' 
-                          ? 'border-pink-600 bg-gradient-to-br from-pink-50 to-rose-50 shadow-lg' 
-                          : 'border-slate-300 bg-white hover:border-pink-400 hover:shadow-md'
-                      }`}>
-                        <input 
-                          type="radio" 
-                          name="emailType" 
-                          value="offer" 
-                          checked={emailType === 'offer'} 
-                          onChange={(e) => setEmailType(e.target.value)}
-                          className="absolute opacity-0"
-                        />
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">💼</div>
-                          <div className={`font-semibold ${emailType === 'offer' ? 'text-pink-700' : 'text-slate-700'}`}>
-                            Offer Letter
-                          </div>
-                        </div>
-                        {emailType === 'offer' && (
-                          <div className="absolute top-2 right-2 bg-pink-600 text-white rounded-full w-6 h-6 flex items-center justify-center">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                      </label>
-
-                      <label className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all transform hover:scale-105 ${
-                        emailType === 'rejection' 
-                          ? 'border-red-600 bg-gradient-to-br from-red-50 to-orange-50 shadow-lg' 
-                          : 'border-slate-300 bg-white hover:border-red-400 hover:shadow-md'
-                      }`}>
-                        <input 
-                          type="radio" 
-                          name="emailType" 
-                          value="rejection" 
-                          checked={emailType === 'rejection'} 
-                          onChange={(e) => setEmailType(e.target.value)}
-                          className="absolute opacity-0"
-                        />
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">❌</div>
-                          <div className={`font-semibold ${emailType === 'rejection' ? 'text-red-700' : 'text-slate-700'}`}>
-                            Rejection
-                          </div>
-                        </div>
-                        {emailType === 'rejection' && (
-                          <div className="absolute top-2 right-2 bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                      </label>
-
-                      <label className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all transform hover:scale-105 ${
-                        emailType === 'document' 
-                          ? 'border-blue-600 bg-gradient-to-br from-blue-50 to-cyan-50 shadow-lg' 
-                          : 'border-slate-300 bg-white hover:border-blue-400 hover:shadow-md'
-                      }`}>
-                        <input 
-                          type="radio" 
-                          name="emailType" 
-                          value="document" 
-                          checked={emailType === 'document'} 
-                          onChange={(e) => setEmailType(e.target.value)}
-                          className="absolute opacity-0"
-                        />
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">📄</div>
-                          <div className={`font-semibold ${emailType === 'document' ? 'text-blue-700' : 'text-slate-700'}`}>
-                            Documents
-                          </div>
-                        </div>
-                        {emailType === 'document' && (
-                          <div className="absolute top-2 right-2 bg-blue-600 text-white rounded-full w-6 h-6 flex items-center justify-center">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                      </label>
-
-                      <label className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all transform hover:scale-105 ${
-                        emailType === 'onboarding' 
-                          ? 'border-green-600 bg-gradient-to-br from-green-50 to-emerald-50 shadow-lg' 
-                          : 'border-slate-300 bg-white hover:border-green-400 hover:shadow-md'
-                      }`}>
-                        <input 
-                          type="radio" 
-                          name="emailType" 
-                          value="onboarding" 
-                          checked={emailType === 'onboarding'} 
-                          onChange={(e) => setEmailType(e.target.value)}
-                          className="absolute opacity-0"
-                        />
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">🎯</div>
-                          <div className={`font-semibold ${emailType === 'onboarding' ? 'text-green-700' : 'text-slate-700'}`}>
-                            Onboarding
-                          </div>
-                        </div>
-                        {emailType === 'onboarding' && (
-                          <div className="absolute top-2 right-2 bg-green-600 text-white rounded-full w-6 h-6 flex items-center justify-center">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                      </label>
-
-                      <label className={`relative p-4 border-2 rounded-xl cursor-pointer transition-all transform hover:scale-105 ${
-                        emailType === 'custom' 
-                          ? 'border-purple-600 bg-gradient-to-br from-purple-50 to-fuchsia-50 shadow-lg' 
-                          : 'border-slate-300 bg-white hover:border-purple-400 hover:shadow-md'
-                      }`}>
-                        <input 
-                          type="radio" 
-                          name="emailType" 
-                          value="custom" 
-                          checked={emailType === 'custom'} 
-                          onChange={(e) => setEmailType(e.target.value)}
-                          className="absolute opacity-0"
-                        />
-                        <div className="text-center">
-                          <div className="text-4xl mb-2">✏️</div>
-                          <div className={`font-semibold ${emailType === 'custom' ? 'text-purple-700' : 'text-slate-700'}`}>
-                            Custom
-                          </div>
-                        </div>
-                        {emailType === 'custom' && (
-                          <div className="absolute top-2 right-2 bg-purple-600 text-white rounded-full w-6 h-6 flex items-center justify-center">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                      </label>
+                          {emailType === opt.value && (
+                            <div className="absolute top-2 right-2 bg-indigo-600 text-white rounded-full w-5 h-5 flex items-center justify-center">
+                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                          )}
+                        </label>
+                      ))}
                     </div>
                   </div>
 
                   {/* Summary Stats */}
-                  <div className="grid grid-cols-3 gap-4 mb-8">
-                    <div className="bg-gradient-to-br from-blue-50 to-blue-100 border-l-4 border-blue-600 p-5 rounded-xl shadow-sm">
-                      <div className="text-sm text-blue-700 font-semibold mb-1">TOTAL CANDIDATES</div>
-                      <div className="text-3xl font-bold text-blue-900">
+                  <div className="grid grid-cols-3 gap-4 mb-6">
+                    <div className="bg-white border border-gray-200 rounded-xl p-4">
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Total Candidates</div>
+                      <div className="text-2xl font-bold text-gray-900">
                         {candidates.filter(c => selectedIds.includes(c._id) && c.email).length}
                       </div>
                     </div>
-                    <div className="bg-gradient-to-br from-green-50 to-green-100 border-l-4 border-green-600 p-5 rounded-xl shadow-sm">
-                      <div className="text-sm text-green-700 font-semibold mb-1">VALID EMAILS</div>
-                      <div className="text-3xl font-bold text-green-900">
+                    <div className="bg-white border border-gray-200 rounded-xl p-4">
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Valid Emails</div>
+                      <div className="text-2xl font-bold text-gray-900">
                         {candidates.filter(c => selectedIds.includes(c._id) && c.email && c.email.includes('@')).length}
                       </div>
                     </div>
-                    <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 border-l-4 border-indigo-600 p-5 rounded-xl shadow-sm">
-                      <div className="text-sm text-indigo-700 font-semibold mb-1">SELECTED</div>
-                      <div className="text-3xl font-bold text-indigo-900">{selectedEmails.size}</div>
+                    <div className="bg-white border border-gray-200 rounded-xl p-4">
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Selected</div>
+                      <div className="text-2xl font-bold text-indigo-600">{selectedEmails.size}</div>
                     </div>
                   </div>
 
                   {/* Candidate Selection Table */}
-                  <div className="mb-8">
-                    <h3 className="text-xl font-bold mb-4 text-slate-800 flex items-center gap-2">
-                      <span className="text-2xl">👥</span> Step 2: Select Recipients
+                  <div className="mb-6">
+                    <h3 className="text-sm font-bold text-gray-900 mb-4">
+                      Step 2: Select Recipients
                     </h3>
-                    <div className="border-2 border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                      <div className="max-h-96 overflow-y-auto">
+                    <div className="border border-gray-200 rounded-xl overflow-hidden">
+                      <div className="max-h-80 overflow-y-auto">
                         <table className="w-full">
-                          <thead className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white sticky top-0 z-10">
+                          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
                             <tr>
-                              <th className="p-4 text-center w-16">
+                              <th className="px-4 py-3 text-center w-12">
                                 <input 
                                   type="checkbox" 
                                   checked={selectedEmails.size === candidates.filter(c => selectedIds.includes(c._id) && c.email).length && selectedEmails.size > 0}
                                   onChange={selectAllEmails}
-                                  className="w-5 h-5 cursor-pointer accent-white"
+                                  className="w-4 h-4 cursor-pointer accent-indigo-600"
                                 />
                               </th>
-                              <th className="p-4 text-left font-semibold">Name</th>
-                              <th className="p-4 text-left font-semibold">Email</th>
-                              <th className="p-4 text-left font-semibold">Position</th>
-                              <th className="p-4 text-left font-semibold">Status</th>
+                              <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Name</th>
+                              <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Email</th>
+                              <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Position</th>
+                              <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Status</th>
                             </tr>
                           </thead>
                           <tbody>
                             {candidates
                               .filter(c => selectedIds.includes(c._id) && c.email)
-                              .map((candidate, idx) => (
-                                <tr key={candidate._id} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50'} hover:bg-indigo-50 transition`}>
-                                  <td className="p-4 text-center">
+                              .map((candidate) => (
+                                <tr key={candidate._id} className="border-b border-gray-100 hover:bg-gray-50/60 transition">
+                                  <td className="px-4 py-3 text-center">
                                     <input 
                                       type="checkbox" 
                                       checked={selectedEmails.has(candidate.email)}
                                       onChange={() => toggleEmailSelection(candidate.email)}
-                                      className="w-5 h-5 cursor-pointer accent-indigo-600"
+                                      className="w-4 h-4 cursor-pointer accent-indigo-600"
                                     />
                                   </td>
-                                  <td className="p-4 font-medium text-slate-800">{candidate.name}</td>
-                                  <td className="p-4">
-                                    <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-sm font-medium">
-                                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                                        <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
-                                        <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
-                                      </svg>
-                                      {candidate.email}
-                                    </span>
-                                  </td>
-                                  <td className="p-4 text-slate-600">{candidate.position || 'N/A'}</td>
-                                  <td className="p-4">
-                                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${
-                                      candidate.status === 'Hired' ? 'bg-green-100 text-green-700' :
-                                      candidate.status === 'Rejected' ? 'bg-red-100 text-red-700' :
-                                      candidate.status === 'Interview' ? 'bg-blue-100 text-blue-700' :
-                                      'bg-yellow-100 text-yellow-700'
+                                  <td className="px-4 py-3 text-sm font-semibold text-gray-900">{candidate.name}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600">{candidate.email}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600">{candidate.position || '—'}</td>
+                                  <td className="px-4 py-3">
+                                    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                                      candidate.status === 'Hired' || candidate.status === 'Joined' ? 'bg-green-100 text-green-700' :
+                                      candidate.status === 'Rejected' || candidate.status === 'Dropped' ? 'bg-red-100 text-red-700' :
+                                      candidate.status === 'Interview' ? 'bg-purple-100 text-purple-700' :
+                                      candidate.status === 'Offer' ? 'bg-cyan-100 text-cyan-700' :
+                                      'bg-amber-100 text-amber-700'
                                     }`}>
                                       {candidate.status}
                                     </span>
@@ -2849,37 +3357,34 @@ const handleAddCandidate = async (e) => {
                       </div>
                     </div>
                     {selectedEmails.size === 0 && (
-                      <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-center gap-3">
-                        <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                      <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center gap-2">
+                        <svg className="w-4 h-4 text-amber-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                           <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                         </svg>
-                        <span className="text-yellow-800 font-medium">Please select at least one recipient to continue</span>
+                        <span className="text-xs text-amber-800 font-medium">Please select at least one recipient to continue</span>
                       </div>
                     )}
                   </div>
 
                   {/* Action Buttons */}
-                  <div className="flex justify-between items-center pt-6 border-t-2 border-slate-200">
+                  <div className="flex justify-between items-center pt-5 border-t border-gray-200">
                     <button 
                       onClick={closeBulkEmailFlow}
-                      className="flex items-center gap-2 px-6 py-3 bg-slate-200 text-slate-700 rounded-xl hover:bg-slate-300 transition font-semibold shadow-sm"
+                      className="px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium"
                     >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                      </svg>
                       Cancel
                     </button>
                     <button 
                       onClick={() => setBulkEmailStep('confirm')}
                       disabled={selectedEmails.size === 0}
-                      className={`flex items-center gap-2 px-8 py-3 rounded-xl transition font-semibold shadow-lg transform hover:scale-105 ${
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-lg transition text-sm font-semibold ${
                         selectedEmails.size === 0 
-                          ? 'bg-slate-300 text-slate-500 cursor-not-allowed' 
-                          : 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:from-indigo-700 hover:to-purple-700'
+                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                          : 'bg-indigo-600 text-white hover:bg-indigo-700'
                       }`}
                     >
                       Next: Confirm
-                      <span className="bg-white bg-opacity-20 px-3 py-1 rounded-full text-sm">
+                      <span className="bg-white/20 px-2 py-0.5 rounded text-xs">
                         {selectedEmails.size} selected
                       </span>
                     </button>
@@ -2892,101 +3397,84 @@ const handleAddCandidate = async (e) => {
             {bulkEmailStep === 'confirm' && (
               <div>
                 {/* Header */}
-                <div className="bg-gradient-to-r from-orange-500 to-red-500 text-white p-8 rounded-t-2xl">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <h2 className="text-3xl font-bold mb-2">⚠️ Confirm Sending</h2>
-                      <p className="text-orange-100">Review your campaign before sending</p>
-                    </div>
-                    <button 
-                      onClick={closeBulkEmailFlow}
-                      className="p-2 hover:bg-white hover:bg-opacity-20 rounded-lg transition"
-                    >
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">Confirm Sending</h2>
+                    <p className="text-sm text-gray-500 mt-0.5">Review your campaign before sending</p>
                   </div>
+                  <button 
+                    onClick={closeBulkEmailFlow}
+                    className="p-2 hover:bg-gray-100 rounded-lg transition text-gray-500 hover:text-gray-700"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
 
-                <div className="p-8">
+                <div className="p-6">
                   {/* Campaign Summary */}
-                  <div className="bg-gradient-to-br from-orange-50 to-red-50 border-2 border-orange-300 rounded-2xl p-8 mb-8 shadow-lg">
-                    <div className="text-center mb-6">
-                      <div className="text-6xl mb-4">🚀</div>
-                      <p className="text-2xl font-bold text-slate-800 mb-2">
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 mb-6">
+                    <div className="text-center mb-5">
+                      <p className="text-lg font-bold text-gray-900">
                         Ready to send <span className="text-indigo-600">{selectedEmails.size}</span> emails
                       </p>
                     </div>
 
-                    <div className="bg-white rounded-xl p-6 shadow-sm mb-6">
-                      <div className="flex items-center justify-center gap-3 mb-4">
-                        <span className="text-slate-600 text-lg">Email Type:</span>
-                        <span className="inline-flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-3 rounded-xl text-xl font-bold shadow-lg">
-                          {emailType === 'interview' ? '📞 Interview Call' :
-                           emailType === 'offer' ? '💼 Offer Letter' :
-                           emailType === 'rejection' ? '❌ Rejection' :
-                           emailType === 'document' ? '📄 Document Collection' :
-                           emailType === 'onboarding' ? '🎯 Onboarding' :
-                           '✏️ Custom Email'}
-                        </span>
-                      </div>
+                    <div className="flex items-center justify-center gap-2 mb-5">
+                      <span className="text-sm text-gray-500">Email Type:</span>
+                      <span className="inline-flex items-center gap-1.5 bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-sm font-semibold">
+                        {emailType === 'interview' ? '📞 Interview Call' :
+                         emailType === 'offer' ? '💼 Offer Letter' :
+                         emailType === 'rejection' ? '❌ Rejection' :
+                         emailType === 'document' ? '📄 Document Collection' :
+                         emailType === 'onboarding' ? '🎯 Onboarding' :
+                         '✏️ Custom Email'}
+                      </span>
                     </div>
 
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="bg-white rounded-xl p-5 shadow-sm text-center border-2 border-blue-200">
-                        <div className="text-3xl mb-2">📊</div>
-                        <div className="text-sm text-slate-600 mb-1">Processing Speed</div>
-                        <div className="text-lg font-bold text-blue-600">Batch Mode</div>
+                      <div className="bg-white border border-gray-200 rounded-xl p-4 text-center">
+                        <div className="text-xs text-gray-500 font-semibold uppercase mb-1">Processing</div>
+                        <div className="text-sm font-bold text-gray-900">Batch Mode</div>
                       </div>
-                      <div className="bg-white rounded-xl p-5 shadow-sm text-center border-2 border-green-200">
-                        <div className="text-3xl mb-2">⏱️</div>
-                        <div className="text-sm text-slate-600 mb-1">Estimated Time</div>
-                        <div className="text-lg font-bold text-green-600">~{Math.ceil(selectedEmails.size / 5)}s</div>
+                      <div className="bg-white border border-gray-200 rounded-xl p-4 text-center">
+                        <div className="text-xs text-gray-500 font-semibold uppercase mb-1">Est. Time</div>
+                        <div className="text-sm font-bold text-gray-900">~{Math.ceil(selectedEmails.size / 5)}s</div>
                       </div>
-                      <div className="bg-white rounded-xl p-5 shadow-sm text-center border-2 border-purple-200">
-                        <div className="text-3xl mb-2">🔒</div>
-                        <div className="text-sm text-slate-600 mb-1">Service</div>
-                        <div className="text-lg font-bold text-purple-600">AWS SES</div>
+                      <div className="bg-white border border-gray-200 rounded-xl p-4 text-center">
+                        <div className="text-xs text-gray-500 font-semibold uppercase mb-1">Service</div>
+                        <div className="text-sm font-bold text-gray-900">AWS SES</div>
                       </div>
                     </div>
 
-                    <div className="mt-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
-                      <p className="text-sm text-blue-800 flex items-center gap-2">
-                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                        </svg>
-                        <span><strong>Note:</strong> Each email will be sent once. Make sure all information is correct before proceeding.</span>
+                    <div className="mt-4 bg-blue-50 border border-blue-200 p-3 rounded-lg">
+                      <p className="text-xs text-blue-700 font-medium">
+                        Each email will be sent once. Make sure all information is correct before proceeding.
                       </p>
                     </div>
                   </div>
 
                   {/* Action Buttons */}
-                  <div className="flex justify-between items-center pt-6 border-t-2 border-slate-200">
+                  <div className="flex justify-between items-center pt-5 border-t border-gray-200">
                     <button 
                       onClick={() => setBulkEmailStep('select')}
-                      className="flex items-center gap-2 px-6 py-3 bg-slate-200 text-slate-700 rounded-xl hover:bg-slate-300 transition font-semibold shadow-sm"
+                      className="px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium"
                     >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                      </svg>
                       Back
                     </button>
                     <button 
                       onClick={handleConfirmSend}
                       disabled={isSendingEmail}
-                      className="flex items-center gap-3 px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl hover:from-green-600 hover:to-emerald-700 transition font-bold shadow-lg transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                      className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isSendingEmail ? (
                         <>
-                          <div className="w-5 h-5 border-3 border-white border-t-transparent rounded-full animate-spin"></div>
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                           Sending...
                         </>
                       ) : (
                         <>
-                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                          </svg>
                           Send All Emails Now
                         </>
                       )}
@@ -3000,77 +3488,58 @@ const handleAddCandidate = async (e) => {
             {bulkEmailStep === 'sending' && campaignStatus && (
               <div>
                 {/* Header */}
-                <div className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white p-8 rounded-t-2xl">
-                  <div className="text-center">
-                    <div className="text-6xl mb-4 animate-bounce">⏳</div>
-                    <h2 className="text-3xl font-bold mb-2">Sending In Progress</h2>
-                    <p className="text-blue-100">Please wait while we send your emails...</p>
-                  </div>
+                <div className="px-6 py-5 border-b border-gray-200">
+                  <h2 className="text-xl font-bold text-gray-900">Sending In Progress</h2>
+                  <p className="text-sm text-gray-500 mt-0.5">Please wait while we send your emails...</p>
                 </div>
 
-                <div className="p-8">
-                  <div className="bg-gradient-to-br from-slate-50 to-blue-50 border-2 border-blue-200 rounded-2xl p-8 shadow-lg">
-                    <p className="text-2xl font-bold mb-8 text-center text-slate-800">
-                      🚀 Sending {campaignStatus.totalEmails} emails in real-time
+                <div className="p-6">
+                  <div className="mb-6">
+                    <p className="text-sm font-semibold text-gray-900 mb-4">
+                      Sending {campaignStatus.totalEmails} emails
                     </p>
 
                     {/* Progress Bar */}
-                    <div className="mb-8">
-                      <div className="flex justify-between items-center mb-3">
-                        <span className="text-lg font-semibold text-slate-700">Overall Progress</span>
-                        <span className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                    <div className="mb-6">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-xs font-medium text-gray-500">Overall Progress</span>
+                        <span className="text-sm font-bold text-indigo-600">
                           {Math.min(100, Math.round(((campaignStatus.completed + campaignStatus.failed) / campaignStatus.totalEmails) * 100))}%
                         </span>
                       </div>
-                      <div className="h-10 bg-slate-200 rounded-full overflow-hidden shadow-inner relative">
+                      <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 transition-all duration-500 flex items-center justify-center text-white font-bold relative overflow-hidden"
+                          className="h-full bg-indigo-600 transition-all duration-500 rounded-full"
                           style={{ width: `${Math.min(100, ((campaignStatus.completed + campaignStatus.failed) / campaignStatus.totalEmails) * 100)}%` }}
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-shimmer"></div>
-                          {Math.min(100, ((campaignStatus.completed + campaignStatus.failed) / campaignStatus.totalEmails) * 100) > 20 && (
-                            <span className="relative z-10">{campaignStatus.completed + campaignStatus.failed} / {campaignStatus.totalEmails}</span>
-                          )}
-                        </div>
+                        />
                       </div>
+                      <p className="text-xs text-gray-500 mt-1">{campaignStatus.completed + campaignStatus.failed} / {campaignStatus.totalEmails} processed</p>
                     </div>
 
                     {/* Status Cards */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                      <div className="bg-gradient-to-br from-blue-50 to-blue-100 border-l-4 border-blue-500 p-6 rounded-xl shadow-md transform hover:scale-105 transition">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm text-blue-700 font-semibold">QUEUED</span>
-                          <span className="text-2xl">⏯️</span>
-                        </div>
-                        <div className="text-4xl font-bold text-blue-600">{campaignStatus.waiting || 0}</div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="bg-white border border-gray-200 rounded-xl p-4">
+                        <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Queued</div>
+                        <div className="text-2xl font-bold text-gray-900">{campaignStatus.waiting || 0}</div>
                       </div>
-                      <div className="bg-gradient-to-br from-yellow-50 to-yellow-100 border-l-4 border-yellow-500 p-6 rounded-xl shadow-md transform hover:scale-105 transition">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm text-yellow-700 font-semibold">PROCESSING</span>
-                          <span className="text-2xl">⏳</span>
-                        </div>
-                        <div className="text-4xl font-bold text-yellow-600">{campaignStatus.processing || 0}</div>
+                      <div className="bg-white border border-gray-200 rounded-xl p-4">
+                        <div className="text-xs font-semibold text-amber-600 uppercase mb-1">Processing</div>
+                        <div className="text-2xl font-bold text-gray-900">{campaignStatus.processing || 0}</div>
                       </div>
-                      <div className="bg-gradient-to-br from-green-50 to-green-100 border-l-4 border-green-500 p-6 rounded-xl shadow-md transform hover:scale-105 transition">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm text-green-700 font-semibold">SENT</span>
-                          <span className="text-2xl">✅</span>
-                        </div>
-                        <div className="text-4xl font-bold text-green-600">{campaignStatus.completed || 0}</div>
+                      <div className="bg-white border border-gray-200 rounded-xl p-4">
+                        <div className="text-xs font-semibold text-green-600 uppercase mb-1">Sent</div>
+                        <div className="text-2xl font-bold text-green-700">{campaignStatus.completed || 0}</div>
                       </div>
-                      <div className="bg-gradient-to-br from-red-50 to-red-100 border-l-4 border-red-500 p-6 rounded-xl shadow-md transform hover:scale-105 transition">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm text-red-700 font-semibold">FAILED</span>
-                          <span className="text-2xl">❌</span>
-                        </div>
-                        <div className="text-4xl font-bold text-red-600">{campaignStatus.failed || 0}</div>
+                      <div className="bg-white border border-gray-200 rounded-xl p-4">
+                        <div className="text-xs font-semibold text-red-600 uppercase mb-1">Failed</div>
+                        <div className="text-2xl font-bold text-red-700">{campaignStatus.failed || 0}</div>
                       </div>
                     </div>
 
-                    <div className="text-center">
-                      <div className="inline-flex items-center gap-2 bg-white px-6 py-3 rounded-full shadow-sm">
-                        <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                        <span className="text-sm text-slate-600">Processing emails... Please wait</span>
+                    <div className="text-center mt-5">
+                      <div className="inline-flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-lg">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                        <span className="text-xs text-gray-600 font-medium">Processing emails... Please wait</span>
                       </div>
                     </div>
                   </div>
@@ -3082,86 +3551,72 @@ const handleAddCandidate = async (e) => {
             {bulkEmailStep === 'results' && campaignStatus && (
               <div>
                 {/* Header */}
-                <div className="bg-gradient-to-r from-green-500 to-emerald-600 text-white p-8 rounded-t-2xl">
-                  <div className="text-center">
-                    <div className="text-7xl mb-4 animate-bounce">✨</div>
-                    <h2 className="text-3xl font-bold mb-2">Campaign Complete!</h2>
-                    <p className="text-green-100">Your bulk email campaign has finished processing</p>
-                  </div>
+                <div className="px-6 py-5 border-b border-gray-200">
+                  <h2 className="text-xl font-bold text-gray-900">Campaign Complete</h2>
+                  <p className="text-sm text-gray-500 mt-0.5">Your bulk email campaign has finished processing</p>
                 </div>
 
-                <div className="p-8">
+                <div className="p-6">
                   {/* Success Banner */}
-                  <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-400 rounded-2xl p-8 mb-8 shadow-lg text-center">
-                    <div className="text-8xl mb-6">🎉</div>
-                    <h3 className="text-3xl font-bold text-green-800 mb-3">
-                      Bulk Email Campaign Finished!
-                    </h3>
-                    <p className="text-lg text-green-700">
-                      All emails have been processed successfully
-                    </p>
+                  <div className="bg-green-50 border border-green-200 rounded-xl p-5 mb-6 text-center">
+                    <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+                      <svg className="w-6 h-6 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-bold text-green-800 mb-1">All Emails Processed</h3>
+                    <p className="text-sm text-green-700">Campaign completed successfully</p>
                   </div>
 
                   {/* Summary Cards */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                    <div className="bg-gradient-to-br from-slate-50 to-slate-100 border-2 border-slate-300 rounded-2xl p-8 text-center shadow-md transform hover:scale-105 transition">
-                      <div className="text-5xl mb-4">📊</div>
-                      <div className="text-sm text-slate-600 font-semibold mb-2">TOTAL EMAILS</div>
-                      <div className="text-5xl font-bold text-slate-800">{campaignStatus.totalEmails || 0}</div>
+                  <div className="grid grid-cols-3 gap-4 mb-6">
+                    <div className="bg-white border border-gray-200 rounded-xl p-5 text-center">
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Total Emails</div>
+                      <div className="text-3xl font-bold text-gray-900">{campaignStatus.totalEmails || 0}</div>
                     </div>
-                    <div className="bg-gradient-to-br from-green-50 to-green-100 border-2 border-green-400 rounded-2xl p-8 text-center shadow-md transform hover:scale-105 transition">
-                      <div className="text-5xl mb-4">✅</div>
-                      <div className="text-sm text-green-700 font-semibold mb-2">SUCCESSFULLY SENT</div>
-                      <div className="text-5xl font-bold text-green-700">{campaignStatus.completed || 0}</div>
+                    <div className="bg-white border border-gray-200 rounded-xl p-5 text-center">
+                      <div className="text-xs font-semibold text-green-600 uppercase tracking-wider mb-1">Successfully Sent</div>
+                      <div className="text-3xl font-bold text-green-700">{campaignStatus.completed || 0}</div>
                     </div>
-                    <div className="bg-gradient-to-br from-red-50 to-red-100 border-2 border-red-400 rounded-2xl p-8 text-center shadow-md transform hover:scale-105 transition">
-                      <div className="text-5xl mb-4">❌</div>
-                      <div className="text-sm text-red-700 font-semibold mb-2">FAILED</div>
-                      <div className="text-5xl font-bold text-red-700">{campaignStatus.failed || 0}</div>
+                    <div className="bg-white border border-gray-200 rounded-xl p-5 text-center">
+                      <div className="text-xs font-semibold text-red-600 uppercase tracking-wider mb-1">Failed</div>
+                      <div className="text-3xl font-bold text-red-700">{campaignStatus.failed || 0}</div>
                     </div>
                   </div>
 
                   {/* Success Rate */}
-                  <div className="bg-gradient-to-br from-indigo-50 to-purple-50 border-2 border-indigo-300 rounded-2xl p-6 mb-8 shadow-lg">
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 mb-6">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="text-5xl">📈</div>
-                        <div>
-                          <div className="text-sm text-slate-600 font-semibold mb-1">SUCCESS RATE</div>
-                          <div className="text-slate-700 text-lg">Overall campaign performance</div>
-                        </div>
+                      <div>
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-0.5">Success Rate</div>
+                        <div className="text-sm text-gray-600">Overall campaign performance</div>
                       </div>
-                      <div className="text-6xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                      <div className="text-3xl font-bold text-indigo-600">
                         {campaignStatus.successRate || '0%'}
                       </div>
                     </div>
                   </div>
 
-                  {/* Email Type Badge */}
-                  <div className="bg-white border-2 border-slate-200 rounded-xl p-6 mb-8 shadow-sm">
-                    <div className="flex items-center justify-center gap-3">
-                      <span className="text-slate-600 text-lg font-semibold">Email Type:</span>
-                      <span className="inline-flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-3 rounded-xl text-xl font-bold shadow-lg">
-                        {emailType === 'interview' ? '📞 Interview Call' :
-                         emailType === 'offer' ? '💼 Offer Letter' :
-                         emailType === 'rejection' ? '❌ Rejection' :
-                         emailType === 'document' ? '📄 Document Collection' :
-                         emailType === 'onboarding' ? '🎯 Onboarding' :
-                         '✏️ Custom Email'}
-                      </span>
-                    </div>
+                  {/* Email Type */}
+                  <div className="flex items-center justify-center gap-2 mb-6">
+                    <span className="text-sm text-gray-500">Email Type:</span>
+                    <span className="inline-flex items-center gap-1.5 bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-sm font-semibold">
+                      {emailType === 'interview' ? '📞 Interview Call' :
+                       emailType === 'offer' ? '💼 Offer Letter' :
+                       emailType === 'rejection' ? '❌ Rejection' :
+                       emailType === 'document' ? '📄 Document Collection' :
+                       emailType === 'onboarding' ? '🎯 Onboarding' :
+                       '✏️ Custom Email'}
+                    </span>
                   </div>
 
                   {/* Action Button */}
-                  <div className="flex justify-center pt-6 border-t-2 border-slate-200">
+                  <div className="flex justify-center pt-5 border-t border-gray-200">
                     <button 
                       onClick={closeBulkEmailFlow}
-                      className="flex items-center gap-3 px-12 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-2xl hover:from-indigo-700 hover:to-purple-700 transition font-bold text-lg shadow-xl transform hover:scale-105"
+                      className="px-6 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-semibold"
                     >
-                      <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                      </svg>
-                      Done - Close Window
+                      Done
                     </button>
                   </div>
                 </div>
@@ -3177,35 +3632,35 @@ const handleAddCandidate = async (e) => {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full my-8">
             {/* Header */}
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-8 rounded-2xl mb-6 shadow-lg">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h1 className="text-4xl font-bold mb-2">📋 Review & Import Candidates</h1>
-                  <p className="text-lg text-indigo-100">✅ Ready: {reviewData.ready?.length || 0} | ⚠️ Review: {reviewData.review?.length || 0} | ❌ Blocked: {reviewData.blocked?.length || 0}</p>
-                </div>
-                <button 
-                  onClick={() => { setShowReviewModal(false); setReviewData(null); setEditingRow(null); }} 
-                  className="text-white hover:bg-white/20 p-3 rounded-lg text-2xl"
-                >
-                  ✕
-                </button>
+            <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h1 className="text-xl font-bold text-gray-900">Review & Import Candidates</h1>
+                <p className="text-sm text-gray-500 mt-0.5">Ready: {reviewData.ready?.length || 0} | Review: {reviewData.review?.length || 0} | Blocked: {reviewData.blocked?.length || 0}</p>
               </div>
+              <button 
+                onClick={() => { setShowReviewModal(false); setReviewData(null); setEditingRow(null); }} 
+                className="p-2 hover:bg-gray-100 rounded-lg transition text-gray-500 hover:text-gray-700"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-2 mb-6 border-b-2 border-slate-200 bg-white p-4 rounded-t-xl shadow">
+            <div className="flex gap-4 px-6 py-3 border-b border-gray-200">
               {[
-                { key: 'ready', label: `✅ Ready (${reviewData.ready?.length || 0})`, color: 'bg-green-50 border-green-300 text-green-700' },
-                { key: 'review', label: `⚠️ Review (${reviewData.review?.length || 0})`, color: 'bg-amber-50 border-amber-300 text-amber-700' },
-                { key: 'blocked', label: `❌ Blocked (${reviewData.blocked?.length || 0})`, color: 'bg-red-50 border-red-300 text-red-700' }
+                { key: 'ready', label: `Ready (${reviewData.ready?.length || 0})`, color: 'text-green-700' },
+                { key: 'review', label: `Review (${reviewData.review?.length || 0})`, color: 'text-amber-700' },
+                { key: 'blocked', label: `Blocked (${reviewData.blocked?.length || 0})`, color: 'text-red-700' }
               ].map(tab => (
                 <button
                   key={tab.key}
                   onClick={() => { setReviewFilter(tab.key); setEditingRow(null); }}
-                  className={`px-6 py-3 rounded-lg font-bold text-lg transition ${
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
                     reviewFilter === tab.key 
-                      ? 'bg-indigo-600 text-white shadow-lg transform scale-105' 
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      ? 'bg-indigo-600 text-white' 
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}
                 >
                   {tab.label}
@@ -3214,7 +3669,7 @@ const handleAddCandidate = async (e) => {
             </div>
 
             {/* Content */}
-            <div className="bg-white rounded-b-xl shadow-lg p-6 min-h-96 max-h-[70vh] overflow-y-auto">
+            <div className="bg-white p-6 min-h-80 max-h-[65vh] overflow-y-auto">
               {(() => {
                 let categoryData;
                 if (reviewFilter === 'ready') {
@@ -3232,7 +3687,7 @@ const handleAddCandidate = async (e) => {
                 }
                 
                 if (!categoryData || categoryData.length === 0) {
-                  return <p className="text-slate-500 text-center py-12 text-lg">📭 No records in this category</p>;
+                  return <p className="text-gray-400 text-center py-12 text-sm">No records in this category</p>;
                 }
 
                 return (
@@ -3241,30 +3696,30 @@ const handleAddCandidate = async (e) => {
                     <div className="overflow-x-auto">
                       <table className="w-full border-collapse">
                         <thead>
-                          <tr className="bg-slate-100 border-b-2 border-slate-300">
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Name</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Email</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Contact</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Position</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">CTC</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Status</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Confidence</th>
-                            <th className="px-4 py-3 text-left font-bold text-slate-700">Actions</th>
+                          <tr className="bg-gray-50 border-b border-gray-200">
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Name</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Email</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Contact</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Position</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">CTC</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Status</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Confidence</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
                           {categoryData.map((row, idx) => (
-                            <tr key={idx} className={`border-b hover:bg-slate-50 transition ${
-                              row.validation.category === 'ready' ? 'bg-green-50' :
-                              row.validation.category === 'review' ? 'bg-amber-50' :
-                              'bg-red-50'
+                            <tr key={idx} className={`border-b border-gray-100 hover:bg-gray-50/60 transition ${
+                              row.validation.category === 'ready' ? 'bg-green-50/50' :
+                              row.validation.category === 'review' ? 'bg-amber-50/50' :
+                              'bg-red-50/50'
                             }`}>
-                              <td className="px-4 py-3 font-semibold">{row.fixed?.name || '-'}</td>
-                              <td className="px-4 py-3 text-sm">{row.fixed?.email || '-'}</td>
-                              <td className="px-4 py-3 text-sm">{row.fixed?.contact || '-'}</td>
-                              <td className="px-4 py-3 text-sm">{row.fixed?.position || '-'}</td>
-                              <td className="px-4 py-3 text-sm">{row.fixed?.ctc ? `${row.fixed.ctc} LPA` : '-'}</td>
-                              <td className="px-4 py-3 text-sm">{row.fixed?.status || '-'}</td>
+                              <td className="px-4 py-3 text-sm font-semibold text-gray-900">{row.fixed?.name || '-'}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{row.fixed?.email || '-'}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{row.fixed?.contact || '-'}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{row.fixed?.position || '-'}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{row.fixed?.ctc ? `${row.fixed.ctc} LPA` : '-'}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{row.fixed?.status || '-'}</td>
                               <td className="px-4 py-3">
                                 <span className={`px-3 py-1 rounded-full text-xs font-bold ${
                                   row.validation.confidence >= 80 ? 'bg-green-200 text-green-800' :
@@ -3291,10 +3746,10 @@ const handleAddCandidate = async (e) => {
                     {/* Editing Panel */}
                     {editingRow && (
                       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                        <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-2xl max-h-96 overflow-y-auto">
-                          <h3 className="text-2xl font-bold mb-6">Edit & Save Record - {editingRow.fixed?.name}</h3>
+                        <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-2xl max-h-96 overflow-y-auto">
+                          <h3 className="text-lg font-bold text-gray-900 mb-5">Edit Record — {editingRow.fixed?.name}</h3>
                           
-                          <div className="grid grid-cols-3 gap-4 mb-6">
+                          <div className="grid grid-cols-3 gap-3 mb-5">
                             {[
                               { field: 'name', label: 'Name', type: 'text' },
                               { field: 'email', label: 'Email', type: 'email' },
@@ -3314,12 +3769,12 @@ const handleAddCandidate = async (e) => {
                               { field: 'status', label: 'Status', type: 'select' }
                             ].map(({ field, label, type }) => (
                               <div key={field}>
-                                <label className="block text-xs font-bold text-slate-600 mb-1">{label}</label>
+                                <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1">{label}</label>
                                 {type === 'select' ? (
                                   <select
                                     value={editingRow.fixed?.[field] || ''}
                                     onChange={(e) => setEditingRow({ ...editingRow, fixed: { ...editingRow.fixed, [field]: e.target.value } })}
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium focus:border-blue-600"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                                   >
                                     <option value="">Select Status</option>
                                     {['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Rejected', 'Interested', 'Interested and scheduled'].map(s => (
@@ -3331,7 +3786,7 @@ const handleAddCandidate = async (e) => {
                                     type={type}
                                     value={editingRow.fixed?.[field] || ''}
                                     onChange={(e) => setEditingRow({ ...editingRow, fixed: { ...editingRow.fixed, [field]: e.target.value } })}
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium focus:border-blue-600"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                                   />
                                 )}
                               </div>
@@ -3340,7 +3795,7 @@ const handleAddCandidate = async (e) => {
 
                           {/* Validation Summary */}
                           {editingRow.validation && (
-                            <div className="mb-6 p-4 bg-slate-50 rounded-lg">
+                            <div className="mb-5 p-4 bg-gray-50 rounded-lg border border-gray-200">
                               {editingRow.validation.errors?.length > 0 && (
                                 <div className="mb-3">
                                   <p className="font-bold text-red-700 mb-1">❌ Errors:</p>
@@ -3364,19 +3819,19 @@ const handleAddCandidate = async (e) => {
                           <div className="flex gap-3">
                             <button
                               onClick={() => handleSaveEditedRecord()}
-                              className="flex-1 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg font-bold hover:from-green-700 hover:to-emerald-700 transition text-base shadow-lg"
+                              className="flex-1 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition"
                             >
-                              ✅ Save & Import Now
+                              Save & Import
                             </button>
                             <button
                               onClick={() => handleRevalidateRecord(editingRow)}
-                              className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition text-base"
+                              className="flex-1 px-4 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 transition"
                             >
-                              🔄 Re-validate
+                              Re-validate
                             </button>
                             <button
                               onClick={() => setEditingRow(null)}
-                              className="flex-1 px-4 py-3 bg-slate-400 text-white rounded-lg font-bold hover:bg-slate-500 transition text-base"
+                              className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition"
                             >
                               Close
                             </button>
@@ -3392,51 +3847,86 @@ const handleAddCandidate = async (e) => {
             {/* Import Confirmation Modal */}
             {importConfirmation?.show && (
               <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
-                <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center animate-in fade-in scale-in">
-                  <div className="mb-6">
-                    <div className="text-6xl mb-4 animate-bounce">✅</div>
-                    <h3 className="text-2xl font-bold text-slate-800 mb-2">Success!</h3>
-                    <p className="text-slate-600 text-lg">
-                      <strong>{importConfirmation.candidateName}</strong>
-                    </p>
-                    <p className="text-slate-600 mt-2">
-                      has been successfully sent to database
-                    </p>
-                  </div>
-
-                  <div className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-300 rounded-xl p-4 mb-6">
-                    <p className="text-sm text-green-700 font-semibold">
-                      💾 Candidate record saved and imported
+                <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full text-center">
+                  <div className="mb-4">
+                    <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+                      <svg className="w-6 h-6 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-bold text-gray-900 mb-1">Imported Successfully</h3>
+                    <p className="text-sm text-gray-600">
+                      <strong>{importConfirmation.candidateName}</strong> has been saved to the database.
                     </p>
                   </div>
-
                   <button
                     onClick={() => {
                       setImportConfirmation(null);
-                      setReviewFilter('ready'); // Reset to Ready tab to show updated data
+                      setReviewFilter('ready');
                     }}
-                    className="w-full px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg font-bold hover:from-green-700 hover:to-emerald-700 transition text-base shadow-lg"
+                    className="w-full px-4 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 transition"
                   >
-                    OK, Continue
+                    Continue
                   </button>
                 </div>
               </div>
             )}
 
             {/* Footer Action Buttons */}
-            <div className="flex gap-4 mt-6 justify-end">
+            <div className="flex gap-3 px-6 py-4 border-t border-gray-200 justify-end">
               <button
                 onClick={() => { setShowReviewModal(false); setReviewData(null); setEditingRow(null); }}
-                className="px-8 py-3 bg-slate-400 text-white rounded-lg font-bold hover:bg-slate-500 transition text-lg"
+                className="px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition"
               >
-                ✕ Close
+                Close
               </button>
               <button
                 onClick={handleImportReviewed}
-                className="px-8 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg font-bold hover:from-green-600 hover:to-emerald-700 transition text-lg shadow-lg"
+                className="px-5 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition"
               >
-                ✅ Import All Ready Records
+                Import All Ready Records
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Resume Preview Modal */}
+      {previewResumeUrl && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={closeResumePreview}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[90vw] h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-900">Resume Preview</h3>
+              <div className="flex items-center gap-3">
+                <a href={previewResumeUrl} download className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors flex items-center gap-2">
+                  <Download size={16} /> Download
+                </a>
+                <button onClick={closeResumePreview} className="p-2 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer">
+                  <X size={20} className="text-gray-600" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-gray-100 flex items-center justify-center">
+              {isPreviewLoading ? (
+                <div className="flex flex-col items-center gap-3">
+                  <RefreshCw size={32} className="text-indigo-500 animate-spin" />
+                  <p className="text-gray-500 font-medium">Loading preview...</p>
+                </div>
+              ) : previewBlobUrl ? (
+                <iframe
+                  src={previewBlobUrl}
+                  className="w-full h-full border-0"
+                  title="Resume Preview"
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-3">
+                  <AlertCircle size={32} className="text-red-400" />
+                  <p className="text-gray-500 font-medium">Unable to preview this file</p>
+                  <a href={previewResumeUrl} download className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+                    Download Instead
+                  </a>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -3449,6 +3939,7 @@ const handleAddCandidate = async (e) => {
 ATS.displayName = 'ATS';
 
 export default ATS;
+
 
 
 

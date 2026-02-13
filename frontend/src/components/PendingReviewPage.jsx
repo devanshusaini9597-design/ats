@@ -3,8 +3,10 @@ import { AlertCircle, CheckCircle, Trash2, Edit2, RefreshCw, Save, X } from 'luc
 import Layout from './Layout';
 import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
+import { useToast } from './Toast';
 
 const PendingReviewPage = () => {
+  const toast = useToast();
   const [candidates, setCandidates] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
@@ -84,10 +86,10 @@ const PendingReviewPage = () => {
       setCandidates(candidates.filter(c => c._id !== id));
       setEditingId(null);
       setEditData(null);
-      alert('✅ Candidate updated successfully!');
+      toast.success('Candidate updated successfully!');
     } catch (error) {
       console.error('❌ Error saving:', error);
-      alert('❌ Failed to save: ' + error.message);
+      toast.error('Failed to save: ' + error.message);
     } finally {
       setIsSaving(false);
     }
@@ -107,7 +109,7 @@ const PendingReviewPage = () => {
       console.log('✅ Candidate deleted');
     } catch (error) {
       console.error('❌ Error deleting:', error);
-      alert('❌ Failed to delete: ' + error.message);
+      toast.error('Failed to delete: ' + error.message);
     }
   };
 

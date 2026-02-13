@@ -1909,11 +1909,15 @@ exports.importReviewedCandidates = async (req, res) => {
 
         console.log(`✅ [IMPORT] Processed ${processedRecords.length} valid records (${recordsToImport.length - processedRecords.length} filtered)`);
 
-        // Build bulk operations for MongoDB
+        // ✅ Stamp ownership on every imported record
+        const userId = req.user.id;
+        processedRecords.forEach(doc => { doc.createdBy = userId; });
+
+        // Build bulk operations for MongoDB - scoped by user + email
         const bulkOps = processedRecords.map(doc => {
             return {
                 updateOne: {
-                    filter: { email: doc.email },
+                    filter: { email: doc.email, createdBy: userId },
                     update: { $set: doc },
                     upsert: true
                 }
@@ -1948,6 +1952,16 @@ exports.importReviewedCandidates = async (req, res) => {
 
 exports.createCandidate = async (req, res) => {
     try {
+        // ✅ Server-side validation: 4 mandatory fields
+        const { name, email, contact, ctc } = req.body;
+        if (!name || !name.trim()) return res.status(400).json({ success: false, message: 'Name is required' });
+        if (!email || !email.trim()) return res.status(400).json({ success: false, message: 'Email is required' });
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
+        if (!contact || !contact.trim()) return res.status(400).json({ success: false, message: 'Contact number is required' });
+        const digits = contact.replace(/\D/g, '');
+        if (digits.length < 7 || digits.length > 15) return res.status(400).json({ success: false, message: 'Enter a valid phone number (7-15 digits)' });
+        if (!ctc || !ctc.trim()) return res.status(400).json({ success: false, message: 'Current CTC is required' });
+
         if (typeof req.body.statusHistory === 'string') {
             req.body.statusHistory = JSON.parse(req.body.statusHistory);
         }
@@ -1959,6 +1973,9 @@ exports.createCandidate = async (req, res) => {
         if (req.body.location && !req.body.state) {
             req.body.state = LocationService.detectState(req.body.location);
         }
+
+        // ✅ Stamp ownership: candidate belongs to the logged-in user
+        req.body.createdBy = req.user.id;
 
         const newCandidate = new Candidate(req.body);
         await newCandidate.save();
@@ -1983,8 +2000,13 @@ exports.updateCandidate = async (req, res) => {
             req.body.state = LocationService.detectState(req.body.location);
         }
 
-        const updatedCandidate = await Candidate.findByIdAndUpdate(id, { $set: req.body }, { new: true, runValidators: true });
-        if (!updatedCandidate) return res.status(404).json({ success: false, message: "Candidate not found" });
+        // Only update if candidate belongs to the logged-in user
+        const updatedCandidate = await Candidate.findOneAndUpdate(
+            { _id: id, createdBy: req.user.id },
+            { $set: req.body },
+            { new: true, runValidators: true }
+        );
+        if (!updatedCandidate) return res.status(404).json({ success: false, message: "Candidate not found or access denied" });
         res.status(200).json({ success: true, message: "Updated Successfully", data: updatedCandidate });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

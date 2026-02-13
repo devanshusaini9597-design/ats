@@ -1,46 +1,66 @@
-import React, { useState } from 'react';
-import { Menu, X, BarChart3, Users, Briefcase, FileText, Settings, LogOut, Home, ChevronDown, ChevronLeft, Upload, Plus, Trash2, Search } from 'lucide-react';
+﻿import React, { useState } from 'react';
+import { Menu, X, BarChart3, Users, Briefcase, FileText, Settings, LogOut, Home, ChevronDown, ChevronLeft, Upload, Plus, Trash2, Search, Mail } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { handleLogout } from '../utils/authUtils';
+import { useToast } from './Toast';
 
 const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
   const [expandedMenu, setExpandedMenu] = useState(null);
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
+  const toast = useToast();
 
-  // Extract actions from props with default no-ops
+  // Extract actions from props with default navigation fallbacks
   const {
-    onAutoImport = () => console.log('⚠️ onAutoImport not defined'),
-    onAddCandidate = () => console.log('⚠️ onAddCandidate not defined')
+    onAutoImport = () => navigate('/auto-import'),
+    onAddCandidate = () => navigate('/add-candidate')
   } = sidebarActions;
-
-  console.log('📌 Sidebar received sidebarActions:', sidebarActions);
-  console.log('📌 onAutoImport:', onAutoImport);
-  console.log('📌 onAddCandidate:', onAddCandidate);
 
   const menuItems = [
     { icon: Home, label: 'Dashboard', type: 'link', action: () => { navigate('/dashboard'); if (isOpen) setIsOpen(false); } },
-    { 
-      icon: Users, 
-      label: 'Candidates', 
+    {
+      icon: Users,
+      label: 'Candidates',
       type: 'submenu',
       submenu: [
         { label: 'All Candidates', action: () => { navigate('/ats'); if (isOpen) setIsOpen(false); }, icon: Users },
         { label: 'Add a Candidate', action: () => { navigate('/add-candidate'); if (isOpen) setIsOpen(false); }, icon: Plus },
-        { label: 'Auto Import', action: () => { alert('🚀 Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: Upload },
-        { label: 'Pending Review', action: () => { alert('🚀 Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: FileText }
+        { label: 'Resume Parsing', action: () => { navigate('/resume-parsing'); if (isOpen) setIsOpen(false); }, icon: FileText },
+        { label: 'Auto Import', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: Upload },
+        { label: 'Pending Review', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: FileText }
       ]
     },
-    { icon: Briefcase, label: 'Jobs', type: 'link', action: () => { alert('🚀 Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); } },
+    {
+      icon: Briefcase,
+      label: 'Manage Data',
+      type: 'submenu',
+      submenu: [
+        { label: 'Manage Positions', action: () => { navigate('/manage-positions'); if (isOpen) setIsOpen(false); }, icon: Briefcase },
+        { label: 'Manage Company', action: () => { navigate('/manage-company'); if (isOpen) setIsOpen(false); }, icon: Briefcase },
+        { label: 'Manage Clients', action: () => { navigate('/manage-clients'); if (isOpen) setIsOpen(false); }, icon: Users },
+        { label: 'Manage Sources', action: () => { navigate('/manage-sources'); if (isOpen) setIsOpen(false); }, icon: FileText }
+      ]
+    },
+    { icon: Briefcase, label: 'Jobs', type: 'link', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); } },
+    {
+      icon: Mail,
+      label: 'Email',
+      type: 'submenu',
+      submenu: [
+        { label: 'Email Templates', action: () => { navigate('/email-templates'); if (isOpen) setIsOpen(false); }, icon: Mail },
+        { label: 'Email Settings', action: () => { navigate('/email-settings'); if (isOpen) setIsOpen(false); }, icon: Settings },
+      ]
+    },
     { 
       icon: BarChart3, 
       label: 'Reports', 
       type: 'submenu',
       submenu: [
-        { label: 'Analytics', action: () => { alert('🚀 Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: BarChart3 },
-        { label: 'Export', action: () => { alert('🚀 Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: FileText }
+        { label: 'Analytics', action: () => { navigate('/analytics'); if (isOpen) setIsOpen(false); }, icon: BarChart3 },
+        { label: 'Export', action: () => { navigate('/analytics?tab=export'); if (isOpen) setIsOpen(false); }, icon: FileText }
       ]
     },
-    { icon: Users, label: 'Team', type: 'link', action: () => { alert('🚀 Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); } },
+    { icon: Users, label: 'Team', type: 'link', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); } },
   ];
 
   const toggleMenu = (label) => {
@@ -57,12 +77,8 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
 
   const handleSubmenuClick = (submenu, e) => {
     e.stopPropagation();
-    console.log('🔘 Submenu clicked:', submenu.label);
     if (submenu.action) {
-      console.log('✅ Executing action for:', submenu.label);
       submenu.action();
-    } else {
-      console.warn('❌ No action defined for submenu:', submenu.label);
     }
   };
 
@@ -189,24 +205,22 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
           <div className="border-t border-gray-200 p-3 space-y-2">
             <button 
               onClick={() => {
-                console.log('🔘 Quick Import button clicked');
-                onAutoImport();
+                toast.info('Feature Coming Soon');
                 if (isOpen) setIsOpen(false);
               }}
               className="w-full flex items-center gap-2 px-3 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-sm font-medium cursor-pointer"
-              title="Auto Import"
+              title="Quick Import"
             >
               <Upload size={16} />
               Quick Import
             </button>
             <button 
               onClick={() => {
-                console.log('🔘 Add Person button clicked');
-                onAddCandidate();
+                toast.info('Feature Coming Soon');
                 if (isOpen) setIsOpen(false);
               }}
               className="w-full flex items-center gap-2 px-3 py-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors text-sm font-medium cursor-pointer"
-              title="Add Candidate"
+              title="Add Person"
             >
               <Plus size={16} />
               Add Person
@@ -217,14 +231,16 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
         {/* Bottom Section */}
         <div className={`border-t border-gray-200 p-2 space-y-1 ${collapsed ? 'hidden lg:block' : ''}`}>
           <button 
-            className="w-full flex items-center gap-3 px-3 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+            onClick={() => { toast.info('Feature Coming Soon'); }}
+            className="w-full flex items-center gap-3 px-3 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
             title="Settings"
           >
             <Settings size={20} className="flex-shrink-0" />
             {!collapsed && <span className="font-medium text-sm">Settings</span>}
           </button>
           <button 
-            className="w-full flex items-center gap-3 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            onClick={() => handleLogout(navigate)}
+            className="w-full flex items-center gap-3 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
             title="Logout"
           >
             <LogOut size={20} className="flex-shrink-0" />

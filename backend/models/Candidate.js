@@ -61,12 +61,13 @@ const CandidateSchema = new mongoose.Schema({
   status: { 
     type: String, 
     default: 'Applied',
-    enum: ['Applied', 'Screening', 'Interview', 'Offer', 'Hired','Joined', 'Rejected'] 
+    enum: ['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Joined', 'Dropped', 'Rejected', 'Interested', 'Interested and scheduled'] 
   },
   client: { type: String, default: '' },
   spoc: { type: String, default: '' },
   source: { type: String, default: '' },
   feedback: { type: String, default: '' }, // ✅ Added feedback field
+  remark: { type: String, default: '' }, // ✅ Remark field (e.g. rejection reason)
   resume: { type: String, default: '' }, 
   hiredDate: { type: Date },
   statusHistory: [{
@@ -75,13 +76,17 @@ const CandidateSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
     updatedBy: { type: String, default: 'Recruiter' }
   }],
+
+  // ✅ Data Isolation: Each candidate belongs to the user who created it
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+
   createdAt: { type: Date, default: Date.now }
 });
 
 // 🚀 Performance Indexes for faster queries
-CandidateSchema.index({ createdAt: -1 }); // For sorting by date
-// Note: email index is automatically created by unique: true constraint above
-CandidateSchema.index({ position: 1 }); // For filtering by position
+CandidateSchema.index({ createdBy: 1, createdAt: -1 }); // Primary query pattern: user's candidates sorted by date
+CandidateSchema.index({ createdBy: 1, position: 1 }); // For filtering by position within a user
+CandidateSchema.index({ createdBy: 1, email: 1 }, { unique: true }); // Unique email per user (not globally)
 CandidateSchema.index({ name: 'text', email: 'text', position: 'text' }); // Full-text search
 
 module.exports = mongoose.model('Candidate', CandidateSchema);

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mail, ArrowRight, X } from 'lucide-react';
+import { Mail, ArrowRight, X, AlertCircle, UserPlus, Eye, EyeOff } from 'lucide-react';
 import API_URL from '../config';
 
 const Login = () => {
@@ -17,6 +17,7 @@ const Login = () => {
   const [success, setSuccess] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [showSignupModal, setShowSignupModal] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [unmatchedEmail, setUnmatchedEmail] = useState('');
 
   // Email validation
@@ -68,17 +69,7 @@ const Login = () => {
 
     // Validate email format
     if (!validateEmail(email)) {
-      errors.email = 'Please enter a valid email address';
-    }
-
-    // Validate password
-    const passwordValidation = validatePassword(password);
-    if (!passwordValidation.valid) {
-      errors.password = 'Password must be 8+ chars with uppercase, lowercase, number & special character';
-    }
-
-    if (Object.keys(errors).length > 0) {
-      setFieldErrors(errors);
+      setFieldErrors({ email: 'Please enter a valid email address' });
       return;
     }
 
@@ -94,8 +85,9 @@ const Login = () => {
 
       if (res.ok) {
         // --- SUCCESS CASE ---
-        localStorage.setItem('token', data.token); // Token save karein
-        localStorage.setItem('userEmail', email); 
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('userEmail', email);
+        localStorage.setItem('userName', data.user?.name || '');
         localStorage.setItem('isLoggedIn', 'true');
 
         setSuccess('Login Successful! Redirecting...');
@@ -110,7 +102,7 @@ const Login = () => {
           setShowSignupModal(true);
           setError('');
         } else {
-          setError(data.displayMessage || data.message || 'Login failed.');
+          setError('Incorrect email or password. Please try again.');
         }
       }
     } catch (err) {
@@ -163,22 +155,33 @@ const Login = () => {
 
           <div>
             <label className="block text-sm font-semibold" style={{color: 'var(--text-secondary)'}}>Password</label>
-            <input 
-              type="password" 
-              name="password"
-              autoComplete="current-password"
-              value={formData.password}
-              onChange={handleChange}
-              placeholder="••••••••" 
-              className="w-full mt-1 p-3 rounded-lg outline-none transition-all"
-              style={{
-                border: `1px solid ${fieldErrors.password ? 'var(--error-main)' : 'var(--border-main)'}`,
-                color: 'var(--text-primary)',
-                backgroundColor: 'var(--bg-primary)'
-              }}
-              onFocus={(e) => e.target.style.boxShadow = '0 0 0 3px var(--primary-lighter)'}
-              onBlur={(e) => e.target.style.boxShadow = 'none'}
-            />
+            <div className="relative">
+              <input 
+                type={showPassword ? 'text' : 'password'} 
+                name="password"
+                autoComplete="current-password"
+                value={formData.password}
+                onChange={handleChange}
+                placeholder="••••••••" 
+                className="w-full mt-1 p-3 pr-11 rounded-lg outline-none transition-all"
+                style={{
+                  border: `1px solid ${fieldErrors.password ? 'var(--error-main)' : 'var(--border-main)'}`,
+                  color: 'var(--text-primary)',
+                  backgroundColor: 'var(--bg-primary)'
+                }}
+                onFocus={(e) => e.target.style.boxShadow = '0 0 0 3px var(--primary-lighter)'}
+                onBlur={(e) => e.target.style.boxShadow = 'none'}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 p-1 rounded-md hover:bg-gray-100 transition"
+                style={{ color: 'var(--text-tertiary)' }}
+                tabIndex={-1}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
             {fieldErrors.password && <p className="text-sm mt-1" style={{color: 'var(--error-main)'}}>{fieldErrors.password}</p>}
           </div>
           
@@ -201,84 +204,62 @@ const Login = () => {
         </p>
       </div>
 
-      {/* ✅ SIGNUP SUGGESTION MODAL */}
+      {/* SIGNUP SUGGESTION MODAL */}
       {showSignupModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="w-full max-w-sm rounded-2xl p-8 relative" style={{backgroundColor: 'var(--bg-primary)', boxShadow: 'var(--shadow-xl)'}}>
-            {/* Close Button */}
-            <button
-              onClick={() => setShowSignupModal(false)}
-              className="absolute top-4 right-4 p-1 hover:bg-gray-100 rounded-lg transition"
-              style={{backgroundColor: 'transparent'}}
-            >
-              <X size={24} style={{color: 'var(--text-secondary)'}} />
-            </button>
-
-            {/* Modal Content */}
-            <div className="text-center">
-              <div className="mb-4 flex justify-center">
-                <Mail size={48} style={{color: 'var(--primary-main)'}} />
-              </div>
-
-              <h3 className="text-2xl font-bold mb-3" style={{color: 'var(--text-primary)'}}>
-                Email Not Found
-              </h3>
-
-              <p className="text-sm mb-6" style={{color: 'var(--text-secondary)'}}>
-                The email <span className="font-semibold" style={{color: 'var(--primary-main)'}}>{unmatchedEmail}</span> is not registered with us.
-              </p>
-
-              <p className="text-sm mb-8" style={{color: 'var(--text-secondary)'}}>
-                Would you like to create a new account with this email?
-              </p>
-
-              {/* Buttons */}
-              <div className="flex gap-3">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden">
+            {/* Header */}
+            <div className="px-6 pt-6 pb-4">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-center">
+                    <AlertCircle size={20} className="text-amber-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900">Account Not Found</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">No account exists with this email</p>
+                  </div>
+                </div>
                 <button
                   onClick={() => setShowSignupModal(false)}
-                  className="flex-1 py-3 rounded-lg font-semibold transition-all"
-                  style={{
-                    backgroundColor: 'var(--border-light)',
-                    color: 'var(--text-primary)',
-                    border: '1px solid var(--border-main)'
-                  }}
-                  onMouseEnter={(e) => e.target.style.backgroundColor = 'var(--bg-secondary)'}
-                  onMouseLeave={(e) => e.target.style.backgroundColor = 'var(--border-light)'}
+                  className="p-1 hover:bg-gray-100 rounded-lg transition"
                 >
-                  Go Back
-                </button>
-
-                <button
-                  onClick={() => {
-                    setShowSignupModal(false);
-                    navigate('/register');
-                  }}
-                  className="flex-1 py-3 rounded-lg font-semibold text-white transition-all flex items-center justify-center gap-2"
-                  style={{
-                    background: 'var(--gradient-primary)',
-                    boxShadow: '0 0 20px rgba(99, 102, 241, 0.3)'
-                  }}
-                  onMouseEnter={(e) => e.target.style.boxShadow = '0 0 30px rgba(99, 102, 241, 0.5)'}
-                  onMouseLeave={(e) => e.target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.3)'}
-                >
-                  Sign Up <ArrowRight size={18} />
+                  <X size={18} className="text-gray-400" />
                 </button>
               </div>
+            </div>
 
-              <p className="text-xs mt-4" style={{color: 'var(--text-tertiary)'}}>
-                Already have an account? <button
-                  onClick={() => setShowSignupModal(false)}
-                  className="font-semibold hover:underline"
-                  style={{
-                    color: 'var(--primary-main)',
-                    backgroundColor: 'transparent',
-                    border: 'none',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Try another email
-                </button>
+            {/* Content */}
+            <div className="px-6 pb-4">
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-3">
+                <div className="flex items-center gap-2">
+                  <Mail size={14} className="text-gray-400 flex-shrink-0" />
+                  <span className="text-sm font-medium text-gray-800 truncate">{unmatchedEmail}</span>
+                </div>
+              </div>
+              <p className="text-sm text-gray-500 mt-3">
+                Would you like to create a new account with this email address?
               </p>
+            </div>
+
+            {/* Actions */}
+            <div className="px-6 pb-6 flex gap-3">
+              <button
+                onClick={() => setShowSignupModal(false)}
+                className="flex-1 px-4 py-2.5 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition"
+              >
+                Try Again
+              </button>
+              <button
+                onClick={() => {
+                  setShowSignupModal(false);
+                  navigate('/register');
+                }}
+                className="flex-1 px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition flex items-center justify-center gap-1.5"
+              >
+                <UserPlus size={16} />
+                Create Account
+              </button>
             </div>
           </div>
         </div>

@@ -578,41 +578,245 @@
 
 
 
-import React, { useEffect } from 'react';
-import { X, Calendar, Link, Briefcase, Upload, User } from 'lucide-react'; 
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, Plus, Upload, X } from 'lucide-react';
+import BASE_API_URL from '../config';
+import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
+import useCountries from '../utils/useCountries';
+import { useToast } from './Toast';
 
 const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId }) => {
     if (!show) return null;
 
-    // 1. INPUT HANDLE FUNCTION
-    const handleInputChange = (e) => {
+    const navigate = useNavigate();
+    const toast = useToast();
+    const [isLoading, setIsLoading] = useState(false);
+    const [isAutoParsing, setIsAutoParsing] = useState(false);
+    const [positions, setPositions] = useState([]);
+    const [companies, setCompanies] = useState([]);
+    const [clients, setClients] = useState([]);
+    const [sources, setSources] = useState([]);
+
+    const initialFormState = {
+        srNo: '',
+        date: new Date().toISOString().split('T')[0],
+        location: '',
+        position: '',
+        fls: '',
+        name: '',
+        contact: '',
+        email: '',
+        companyName: '',
+        experience: '',
+        ctc: '',
+        expectedCtc: '',
+        noticePeriod: '',
+        status: 'Applied',
+        client: '',
+        spoc: '',
+        source: '',
+        resume: null,
+        callBackDate: '',
+        countryCode: '+91'
+    };
+
+    const [countryCode, setCountryCode] = useState(formData.countryCode || '+91');
+
+    // CTC Ranges for dropdowns
+    const ctcRanges = ['0-50k', '50k-1L', '1L-1.5L', '1.5L-2L', '2L-2.5L', '2.5L-3L', '3L-3.5L', '3.5L-4L', '4L-4.5L', '4.5L-5L', '5L-5.5L', '5.5L-6L', '6L-8L', '8L-9L', '9L-10L', 'Above 10L'];
+
+    const countryCodes = useCountries();
+
+    // Fetch master data on component mount
+    useEffect(() => {
+        const fetchMasterData = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+                const [positionsRes, companiesRes, clientsRes, sourcesRes] = await Promise.all([
+                    fetch(`${BASE_API_URL}/api/positions`, { headers }),
+                    fetch(`${BASE_API_URL}/api/companies`, { headers }),
+                    fetch(`${BASE_API_URL}/api/clients`, { headers }),
+                    fetch(`${BASE_API_URL}/api/sources`, { headers })
+                ]);
+
+                if (positionsRes.ok) {
+                    const positionsData = await positionsRes.json();
+                    setPositions(positionsData);
+                }
+
+                if (companiesRes.ok) {
+                    const companiesData = await companiesRes.json();
+                    setCompanies(companiesData);
+                }
+
+                if (clientsRes.ok) {
+                    const clientsData = await clientsRes.json();
+                    setClients(clientsData);
+                }
+
+                if (sourcesRes.ok) {
+                    const sourcesData = await sourcesRes.json();
+                    setSources(sourcesData);
+                }
+            } catch (error) {
+                console.error('Error fetching master data:', error);
+            }
+        };
+
+        fetchMasterData();
+    }, []);
+
+    // Sync countryCode when formData changes (especially during edit)
+    useEffect(() => {
+        if (editId && formData.countryCode) {
+            setCountryCode(formData.countryCode);
+        } else if (!editId) {
+            // Default to India when creating new candidate
+            setCountryCode('+91');
+        }
+    }, [editId, formData.countryCode]);
+
+    // ✅ HELPER: Validate and fix email
+    const validateAndFixEmail = (email) => {
+        if (!email) return { isValid: false, value: '' };
+        let fixed = String(email).trim().toLowerCase();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const isValid = emailRegex.test(fixed);
+        return { isValid, value: fixed };
+    };
+
+    // ✅ HELPER: Validate and fix mobile (country-aware)
+    const validateAndFixMobile = (mobile, country) => {
+        if (!mobile) return { isValid: false, value: '' };
+        let digitsOnly = String(mobile).replace(/\D/g, '');
+
+        // Remove country code if accidentally typed in the contact field
+        if (digitsOnly.startsWith('91') && digitsOnly.length > 10) {
+            digitsOnly = digitsOnly.slice(-10);
+        }
+        if (digitsOnly.startsWith('1') && digitsOnly.length > 10) {
+            digitsOnly = digitsOnly.slice(-10);
+        }
+        if (digitsOnly.length > 11) {
+            digitsOnly = digitsOnly.slice(-10);
+        }
+
+        // Validate based on selected country
+        let isValid = false;
+        const len = digitsOnly.length;
+
+        if (country === '+91') {
+            // India: 10 digits
+            isValid = len === 10;
+        } else if (country === '+1') {
+            // USA/Canada: 10 digits
+            isValid = len === 10;
+        } else if (country === '+44') {
+            // UK: 10-11 digits
+            isValid = len >= 10 && len <= 11;
+        } else if (country === '+61') {
+            // Australia: 9-10 digits
+            isValid = len >= 9 && len <= 10;
+        } else if (country === '+7') {
+            // Russia: 10 digits
+            isValid = len === 10;
+        } else {
+            // Default: at least 9 digits
+            isValid = len >= 9;
+        }
+
+        return { isValid, value: digitsOnly };
+    };
+
+    // ✅ HELPER: Validate and fix name
+    const validateAndFixName = (name) => {
+        if (!name) return { isValid: false, value: '' };
+        let fixed = String(name).replace(/[0-9!@#$%^&*()_+=\[\]{};:'",.<>?/\\|`~-]/g, '').trim();
+        fixed = fixed.split(/\s+/)
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+        const isValid = fixed.length >= 2 && /^[a-zA-Z\s]+$/.test(fixed);
+        return { isValid, value: fixed };
+    };
+
+    const handleInputChange = async (e) => {
         const { name, value, files } = e.target;
-        setFormData({ ...formData, [name]: files ? files[0] : value });
+
+        let finalValue = value;
+
+        if (name === 'name' && value) {
+            finalValue = value.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        if (name === 'email' && value) {
+            finalValue = value.toLowerCase()
+                .replace(/@gnail\.con$/, '@gmail.com')
+                .replace(/@gnail\.com$/, '@gmail.com')
+                .replace(/@gmail\.con$/, '@gmail.com')
+                .replace(/@gmal\.com$/, '@gmail.com');
+        }
+
+        if (name === 'resume') {
+            const file = files[0];
+            setFormData(prev => ({ ...prev, resume: file }));
+
+            if (file) {
+                setIsAutoParsing(true);
+                const data = new FormData();
+                data.append('resume', file);
+
+                try {
+                    const response = await fetch(`${BASE_API_URL}/candidates/parse-logic`, {
+                        method: 'POST',
+                        body: data,
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        console.log("Parsed Data Received:", result);
+
+                        setFormData(prev => ({
+                            ...prev,
+                            name: result.name ? (result.name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')) : prev.name,
+                            email: result.email ? (result.email.toLowerCase().replace(/@gnail\.con$/, '@gmail.com').replace(/@gmail\.con$/, '@gmail.com')) : prev.email,
+                            contact: result.contact || prev.contact
+                        }));
+                    }
+                } catch (error) {
+                    console.error("Auto-parse error:", error);
+                } finally {
+                    setIsAutoParsing(false);
+                }
+            }
+        } else {
+            setFormData(prev => ({ ...prev, [name]: finalValue }));
+        }
     };
 
     // 2. SMART EMAIL CHECK
     const handleEmailCheck = async (email) => {
-        if (!email || editId) return; 
+        if (!email || editId) return;
 
         try {
-            const response = await fetch(`http://localhost:5000/api/candidates/check-email/${email}`);
+            const response = await fetch(`${BASE_API_URL}/api/candidates/check-email/${email}`);
             const result = await response.json();
 
             if (result.exists) {
-                alert(`⚠️ Alert: Candidate already exists!\nPrevious Status: ${result.candidate.status}`);
+                toast.warning(`Candidate already exists! Previous Status: ${result.candidate.status}`);
                 setFormData({
                     ...result.candidate,
                     date: result.candidate.date ? result.candidate.date.split('T')[0] : ''
-                }); 
+                });
             }
         } catch (error) {
             console.error("Email check error:", error);
         }
     };
 
-    const statusOptions = ['Applied', 'Screening', 'Interview', 'Offer', 'Joined', 'Rejected'];
-    const sourceOptions = ['LinkedIn', 'Naukri', 'Indeed', 'Referral', 'Website', 'Other'];
-    const positionOptions = ['Full Stack Developer', 'Frontend Developer', 'Backend Developer', 'HR Intern', 'Sales Executive', 'Software Engineer'];
+    const statusOptions = ['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Joined', 'Dropped', 'Rejected', 'Interested', 'Interested and scheduled'];
 
     return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm p-4 font-sans">
@@ -707,10 +911,49 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                         </div>
 
                         <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Country Code</label>
+                            <select 
+                                className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" 
+                                value={countryCode} 
+                                onChange={(e) => {
+                                    setCountryCode(e.target.value);
+                                    setFormData(prev => ({ ...prev, countryCode: e.target.value }));
+                                }}
+                            >
+                                {countryCodes.map(c => <option key={c.code} value={c.code}>{c.flag} {c.name}: {c.code}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="space-y-1 lg:col-span-2">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Contact Number</label>
-                            <div className="flex w-full">
-                                <span className="inline-flex items-center px-3 text-sm text-gray-900 bg-gray-100 border border-r-0 border-gray-300 rounded-l-md">🇮🇳 +91</span>
-                                <input type="text" name="contact" className="rounded-none rounded-r-lg bg-white border border-gray-200 text-gray-900 focus:ring-[#6366f1] focus:border-[#6366f1] block flex-1 min-w-0 w-full text-sm p-2.5 outline-none" placeholder="9876543210" value={formData.contact || ''} onChange={handleInputChange} />
+                            <div className="flex w-full items-stretch border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-[#6366f1] outline-none bg-white overflow-hidden">
+                                <select 
+                                    className="px-3 py-2.5 bg-white text-sm font-semibold min-w-[92px] border-r border-gray-200 outline-none"
+                                    value={countryCode}
+                                    onChange={(e) => {
+                                        setCountryCode(e.target.value);
+                                        setFormData(prev => ({ ...prev, countryCode: e.target.value }));
+                                    }}
+                                >
+                                    {countryCodes.map(c => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}
+                                </select>
+                                <input 
+                                    type="tel" 
+                                    name="contact" 
+                                    className="flex-1 p-2.5 outline-none bg-white text-sm" 
+                                    placeholder="1234567890" 
+                                    value={formData.contact || ''} 
+                                    onChange={(e) => {
+                                        // Only allow digits, no symbols or country code
+                                        let digitsOnly = e.target.value.replace(/\D/g, '');
+                                        // Limit to reasonable length
+                                        if (digitsOnly.length > 15) {
+                                            digitsOnly = digitsOnly.slice(0, 15);
+                                        }
+                                        setFormData(prev => ({ ...prev, contact: digitsOnly }));
+                                    }}
+                                    maxLength="15"
+                                />
                             </div>
                         </div>
 
@@ -723,8 +966,16 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Position</label>
                             <select name="position" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.position || ''} onChange={handleInputChange} required>
-                                <option value="">Select Role</option>
-                                {positionOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                                <option value="">Select Position</option>
+                                {positions.map(pos => <option key={pos._id} value={pos.name}>{pos.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Company</label>
+                            <select name="companyName" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.companyName || ''} onChange={handleInputChange}>
+                                <option value="">Select Company</option>
+                                {companies.map(company => <option key={company._id} value={company.name}>{company.name}</option>)}
                             </select>
                         </div>
 
@@ -732,45 +983,87 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Location</label>
                             <input type="text" name="location" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.location || ''} onChange={handleInputChange} />
                         </div>
-                        
+
                         <div className="space-y-1">
-                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Company Name</label>
-                            <input type="text" name="companyName" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.companyName || ''} onChange={handleInputChange} />
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Experience (Years)</label>
+                            <select name="experience" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.experience || ''} onChange={handleInputChange}>
+                                <option value="">Select</option>
+                                {[...Array(31).keys()].slice(1).map(num => <option key={num} value={num}>{num}</option>)}
+                            </select>
                         </div>
 
                         <div className="space-y-1">
-                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Experience</label>
-                            <input type="text" name="experience" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.experience || ''} onChange={handleInputChange} />
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Current CTC (LPA)</label>
+                            <select name="ctc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.ctc || ''} onChange={handleInputChange}>
+                                <option value="">Select CTC</option>
+                                {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
+                            </select>
                         </div>
 
                         <div className="space-y-1">
-                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">CTC</label>
-                            <input type="text" name="ctc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.ctc || ''} onChange={handleInputChange} />
-                        </div>
-
-                        <div className="space-y-1">
-                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Expected CTC</label>
-                            <input type="text" name="expectedCtc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.expectedCtc || ''} onChange={handleInputChange} />
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Expected CTC (LPA)</label>
+                            <select name="expectedCtc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.expectedCtc || ''} onChange={handleInputChange}>
+                                <option value="">Select Expected CTC</option>
+                                {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
+                            </select>
                         </div>
 
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Notice Period</label>
-                            <input type="text" name="noticePeriod" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.noticePeriod || ''} onChange={handleInputChange} />
+                            <select name="noticePeriod" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.noticePeriod || ''} onChange={handleInputChange}>
+                                <option value="">Select Notice Period</option>
+                                <option value="Immediate">Immediate</option>
+                                <option value="30 days">30 days</option>
+                                <option value="60 days">60 days</option>
+                                <option value="90 days">90 days</option>
+                            </select>
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">FLS/Non FLS</label>
+                            <select name="fls" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.fls || ''} onChange={handleInputChange}>
+                                <option value="">Select</option>
+                                <option value="FLS">FLS</option>
+                                <option value="Non-FLS">Non-FLS</option>
+                            </select>
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Status</label>
+                            <select name="status" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm font-bold text-indigo-600" value={formData.status || 'Applied'} onChange={handleInputChange}>
+                                {statusOptions.map(o => <option key={o} value={o}>{o}</option>)}
+                            </select>
                         </div>
 
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Client</label>
-                            <input type="text" name="client" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.client || ''} onChange={handleInputChange} />
+                            <select name="client" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.client || ''} onChange={handleInputChange}>
+                                <option value="">Select Client</option>
+                                {clients.map(client => <option key={client._id} value={client.name}>{client.name}</option>)}
+                            </select>
                         </div>
 
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">SPOC</label>
                             <input type="text" name="spoc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.spoc || ''} onChange={handleInputChange} />
                         </div>
-                        
+
+                        <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Source of CV</label>
+                            <select name="source" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.source || ''} onChange={handleInputChange}>
+                                <option value="">Select Source</option>
+                                {sources.map(source => <option key={source._id} value={source.name}>{source.name}</option>)}
+                            </select>
+                        </div>
+
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Call Back Date</label>
                             <input type="date" name="callBackDate" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.callBackDate || ''} onChange={handleInputChange} />
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Comment</label>
+                            <input type="text" name="srNo" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" placeholder="Optional comment" value={formData.srNo || ''} onChange={handleInputChange} />
                         </div>
                     </div>
 

@@ -103,8 +103,8 @@ const Dashboard = () => {
           {/* Hero Section */}
           <div className="bg-gradient-to-r from-indigo-600 to-purple-700 rounded-3xl p-8 text-white shadow-xl relative overflow-hidden">
             <div className="relative z-10">
-              <h1 className="text-3xl md:text-4xl font-bold mb-4">Welcome back, {user.name.split(' ')[0]}! 👋</h1>
-              <p className="text-indigo-100 text-lg max-w-2xl leading-relaxed">
+              <h1 className="text-2xl font-bold mb-4">Welcome back, {user.name.split(' ')[0]}! 👋</h1>
+              <p className="text-indigo-100 text-sm max-w-2xl leading-relaxed">
                 You are logged into the <strong>PeopleConnectHR</strong>. Manage your recruitment, clients, and employees from one central place.
               </p>
             </div>

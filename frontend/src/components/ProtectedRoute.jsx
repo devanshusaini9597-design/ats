@@ -1,16 +1,70 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Lock, ArrowRight, X } from 'lucide-react';
+import { Lock, ArrowRight, X, Loader2 } from 'lucide-react';
 
 const ProtectedRoute = ({ children }) => {
-  const isLoggedIn = localStorage.getItem('isLoggedIn');
-  const token = localStorage.getItem('token');
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('isLoggedIn'));
+  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [validating, setValidating] = useState(true);
+  const [sessionValid, setSessionValid] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const [showLoginModal, setShowLoginModal] = useState(false);
 
-  // If user is not logged in or token is missing, show modal
-  if (!isLoggedIn || !token) {
+  // Validate token against backend on every mount/route change
+  useEffect(() => {
+    const validateSession = async () => {
+      const storedToken = localStorage.getItem('token');
+      const storedLogin = localStorage.getItem('isLoggedIn');
+
+      if (!storedToken || !storedLogin) {
+        setSessionValid(false);
+        setValidating(false);
+        return;
+      }
+
+      try {
+        // Hit any authenticated endpoint to verify token + user exists
+        const res = await fetch('http://localhost:5000/api/notifications/count', {
+          headers: { 'Authorization': `Bearer ${storedToken}` }
+        });
+
+        if (res.ok) {
+          setSessionValid(true);
+        } else {
+          // Token invalid or user deleted — clear session
+          localStorage.removeItem('token');
+          localStorage.removeItem('isLoggedIn');
+          localStorage.removeItem('userEmail');
+          localStorage.removeItem('userName');
+          setIsLoggedIn(false);
+          setToken(null);
+          setSessionValid(false);
+        }
+      } catch {
+        // Backend not reachable — allow if token exists (offline mode)
+        setSessionValid(true);
+      } finally {
+        setValidating(false);
+      }
+    };
+
+    validateSession();
+  }, [location.pathname]);
+
+  // Show loading while validating
+  if (validating) {
+    return (
+      <div className="fixed inset-0 bg-white flex items-center justify-center z-50">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 size={32} className="animate-spin text-indigo-600" />
+          <p className="text-sm text-gray-500">Verifying session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If session is invalid, show login modal
+  if (!sessionValid) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
         <div 
@@ -109,7 +163,7 @@ const ProtectedRoute = ({ children }) => {
     );
   }
 
-  // If authenticated, render the protected component
+  // If authenticated and verified, render the protected component
   return children;
 };
 

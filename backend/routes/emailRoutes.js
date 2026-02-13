@@ -6,7 +6,8 @@ const {
   sendDocumentEmail,
   sendOnboardingEmail,
   sendCustomEmail,
-  sendBulkEmails
+  sendBulkEmails,
+  checkUserEmailConfigured
 } = require('../services/emailService');
 
 /**
@@ -25,10 +26,10 @@ router.post('/send', async (req, res) => {
       });
     }
 
-    if (!name || !position) {
+    if (!name) {
       return res.status(400).json({
         success: false,
-        message: 'Name and position are required'
+        message: 'Candidate name is required'
       });
     }
 
@@ -40,9 +41,19 @@ router.post('/send', async (req, res) => {
     }
 
     // Prepare email options with CC and BCC
-    const emailOptions = {};
+    const emailOptions = { userId: req.user.id };
     if (cc) emailOptions.cc = cc;
     if (bcc) emailOptions.bcc = bcc;
+
+    // Check if user has email configured
+    const isConfigured = await checkUserEmailConfigured(req.user.id);
+    if (!isConfigured) {
+      return res.status(400).json({
+        success: false,
+        message: 'EMAIL_NOT_CONFIGURED',
+        displayMessage: 'Please configure your email settings first. Go to Email → Email Settings to set up your email address.'
+      });
+    }
 
     let result;
     
@@ -115,6 +126,16 @@ router.post('/send-bulk', async (req, res) => {
       });
     }
 
+    // Check if user has email configured
+    const isConfigured = await checkUserEmailConfigured(req.user.id);
+    if (!isConfigured) {
+      return res.status(400).json({
+        success: false,
+        message: 'EMAIL_NOT_CONFIGURED',
+        displayMessage: 'Please configure your email settings first. Go to Email → Email Settings to set up your email address.'
+      });
+    }
+
     console.log(`\n📊 BULK EMAIL CAMPAIGN STARTED:`);
     console.log(`   Type: ${emailType}`);
     console.log(`   Total Recipients: ${candidates.length}`);
@@ -122,7 +143,7 @@ router.post('/send-bulk', async (req, res) => {
     if (bcc) console.log(`   BCC: ${Array.isArray(bcc) ? bcc.join(', ') : bcc}`);
     console.log(`   Timestamp: ${new Date().toLocaleString()}\n`);
 
-    const results = await sendBulkEmails(candidates, emailType, customMessage, { cc, bcc });
+    const results = await sendBulkEmails(candidates, emailType, customMessage, { cc, bcc, userId: req.user.id });
 
     console.log(`\n✅ BULK EMAIL CAMPAIGN COMPLETED:`);
     console.log(`   Success: ${results.success.length}`);
@@ -147,6 +168,104 @@ router.post('/send-bulk', async (req, res) => {
       success: false,
       message: error.message || 'Failed to send bulk emails'
     });
+  }
+});
+
+/**
+ * 👁️ Preview email HTML (no sending)
+ * POST /api/email/preview
+ * Body: { name, position, emailType, customMessage, department, joiningDate }
+ */
+router.post('/preview', (req, res) => {
+  try {
+    const { name = 'Candidate', position = 'Position', emailType, customMessage, department, joiningDate } = req.body;
+
+    const templates = {
+      interview: {
+        subject: `Interview Invitation - ${position}`,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px; color: white; text-align: center; border-radius: 10px 10px 0 0;">
+            <h2 style="margin: 0;">📞 Interview Invitation</h2>
+          </div>
+          <div style="padding: 40px; background: white; border: 1px solid #ddd; border-radius: 0 0 10px 10px;">
+            <p style="color: #333; font-size: 16px;">Dear ${name},</p>
+            <p style="color: #666; line-height: 1.6;">Congratulations! We are pleased to invite you for an interview for the <strong>${position}</strong> position.</p>
+            <p style="color: #666; line-height: 1.6;">Our HR team will contact you shortly with interview details including date, time, and format.</p>
+            <p style="color: #666; line-height: 1.6;">If you have any questions, please feel free to reach out to us.</p>
+            <p style="color: #666; line-height: 1.6;">Best regards,<br><strong>HR Team</strong></p>
+          </div>
+        </div>`
+      },
+      rejection: {
+        subject: `Application Status Update`,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #f5f5f5; padding: 40px; text-align: center; border-radius: 10px 10px 0 0;">
+            <h2 style="color: #333; margin: 0;">Application Status Update</h2>
+          </div>
+          <div style="padding: 40px; background: white; border: 1px solid #ddd; border-radius: 0 0 10px 10px;">
+            <p style="color: #333; font-size: 16px;">Dear ${name},</p>
+            <p style="color: #666; line-height: 1.6;">Thank you for your interest in the <strong>${position}</strong> position. After careful consideration of your application and qualifications, we regret to inform you that we have decided to move forward with other candidates whose experience more closely matches our current needs.</p>
+            <p style="color: #666; line-height: 1.6;">We appreciate the time you invested in applying and interviewing with us. We encourage you to apply for future positions that match your skills and experience.</p>
+            <p style="color: #666; line-height: 1.6;">Best regards,<br><strong>HR Team</strong></p>
+          </div>
+        </div>`
+      },
+      document: {
+        subject: `Document Submission - ${position}`,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 40px; color: white; text-align: center; border-radius: 10px 10px 0 0;">
+            <h2 style="margin: 0;">📄 Document Submission Required</h2>
+          </div>
+          <div style="padding: 40px; background: white; border: 1px solid #ddd; border-radius: 0 0 10px 10px;">
+            <p style="color: #333; font-size: 16px;">Dear ${name},</p>
+            <p style="color: #666; line-height: 1.6;">As the next step in our hiring process for the <strong>${position}</strong> position, we require you to submit the following documents:</p>
+            <ul style="color: #666; line-height: 1.8;">
+              <li>Updated Resume</li>
+              <li>Valid Government ID</li>
+              <li>Educational Certificates</li>
+              <li>Previous Employment Letters</li>
+            </ul>
+            <p style="color: #666; line-height: 1.6;">Please reply to this email with the requested documents within 3 business days.</p>
+            <p style="color: #666; line-height: 1.6;">Best regards,<br><strong>HR Team</strong></p>
+          </div>
+        </div>`
+      },
+      onboarding: {
+        subject: `Onboarding Confirmation - ${position}`,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); padding: 40px; color: white; text-align: center; border-radius: 10px 10px 0 0;">
+            <h2 style="margin: 0;">🎉 Welcome to the Team!</h2>
+          </div>
+          <div style="padding: 40px; background: white; border: 1px solid #ddd; border-radius: 0 0 10px 10px;">
+            <p style="color: #333; font-size: 16px;">Dear ${name},</p>
+            <p style="color: #666; line-height: 1.6;">Welcome aboard! We are excited to have you join our team as a <strong>${position}</strong> in the <strong>${department || 'N/A'}</strong> department.</p>
+            <p style="color: #666; line-height: 1.6;"><strong>Joining Date:</strong> ${joiningDate || 'TBD'}</p>
+            <p style="color: #666; line-height: 1.6;">Please ensure you have completed all onboarding formalities and bring the necessary documents on your first day.</p>
+            <p style="color: #666; line-height: 1.6;">If you have any questions, feel free to reach out to our HR team.</p>
+            <p style="color: #666; line-height: 1.6;">Best regards,<br><strong>HR Team</strong></p>
+          </div>
+        </div>`
+      },
+      custom: {
+        subject: `Message from HR Team`,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="padding: 40px; background: white; border: 1px solid #ddd; border-radius: 10px;">
+            <div style="color: #333; white-space: pre-wrap; line-height: 1.6;">${customMessage || 'Your custom message goes here...'}</div>
+            <p style="color: #999; font-size: 12px; margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">This is an automated message. Please do not reply directly to this email.</p>
+          </div>
+        </div>`
+      }
+    };
+
+    const template = templates[emailType];
+    if (!template) {
+      return res.status(400).json({ success: false, message: 'Invalid email type' });
+    }
+
+    res.json({ success: true, subject: template.subject, html: template.html });
+  } catch (error) {
+    console.error('Preview error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate preview' });
   }
 });
 

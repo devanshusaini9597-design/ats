@@ -72,11 +72,11 @@ const AutoImportPage = () => {
           <div className="bg-white rounded-2xl shadow-lg p-8 border-l-4 border-indigo-600">
             <div className="flex items-start justify-between">
               <div className="flex-1">
-                <h1 className="text-4xl font-bold text-slate-800 mb-2 flex items-center gap-3">
-                  <Upload size={40} className="text-indigo-600" />
+                <h1 className="text-2xl font-bold text-slate-800 mb-2 flex items-center gap-3">
+                  <Upload size={28} className="text-indigo-600" />
                   Auto Import Candidates
                 </h1>
-                <p className="text-slate-600 text-lg">Upload and automatically import candidates from Excel files with smart validation</p>
+                <p className="text-slate-600 text-sm">Upload and automatically import candidates from Excel files with smart validation</p>
               </div>
             </div>
           </div>

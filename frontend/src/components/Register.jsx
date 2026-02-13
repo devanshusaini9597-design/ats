@@ -1,10 +1,13 @@
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { Check, X as XIcon, Eye, EyeOff } from 'lucide-react';
 import API_URL from '../config';
+import { useToast } from './Toast';
 
 const Register = () => {
   const navigate = useNavigate();
+  const toast = useToast();
 
   // 1. State banaya data store karne ke liye
   const [formData, setFormData] = useState({
@@ -15,7 +18,12 @@ const Register = () => {
   });
 
   const [error, setError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [passwordChecks, setPasswordChecks] = useState({
+    hasMinLength: false, hasUppercase: false, hasLowercase: false, hasNumber: false, hasSpecial: false
+  });
+  const [passwordTouched, setPasswordTouched] = useState(false);
 
   // Helper function: Capitalize first letter of each word
   const capitalizeWords = (str) => {
@@ -71,6 +79,19 @@ const Register = () => {
     }
 
     setFormData({ ...formData, [name]: value });
+
+    // Real-time password validation
+    if (name === 'password') {
+      setPasswordTouched(true);
+      const v = validatePassword(value);
+      setPasswordChecks({
+        hasMinLength: v.hasMinLength,
+        hasUppercase: v.hasUppercase,
+        hasLowercase: v.hasLowercase,
+        hasNumber: v.hasNumber,
+        hasSpecial: v.hasSpecial
+      });
+    }
 
     // Clear field errors on change
     if (fieldErrors[name]) {
@@ -130,8 +151,10 @@ const Register = () => {
       const data = await response.json();
 
       if (response.ok) {
-        alert('Registration Successful! Redirecting to Login...');
-        navigate('/login');
+        toast.success('Registration Successful! Redirecting to Login...');
+        setTimeout(() => {
+          navigate('/login');
+        }, 2000);
       } else {
         setError(data.message || 'Registration failed');
       }
@@ -218,22 +241,57 @@ const Register = () => {
 
           <div>
             <label className="block text-sm font-medium" style={{color: 'var(--text-secondary)'}}>Create Password</label>
-            <input 
-              type="password" 
-              name="password" 
-              value={formData.password}
-              onChange={handleChange} 
-              placeholder="Min 8 chars with A-Z, a-z, 0-9, !@#..."
-              className="w-full mt-1 p-3 rounded-lg focus:outline-none transition-all"
-              style={{
-                border: `1px solid ${fieldErrors.password ? 'var(--error-main)' : 'var(--border-main)'}`,
-                color: 'var(--text-primary)',
-                backgroundColor: 'var(--bg-primary)',
-                boxShadow: fieldErrors.password ? '0 0 0 3px var(--error-bg)' : 'none'
-              }}
-            />
+            <div className="relative">
+              <input 
+                type={showPassword ? 'text' : 'password'} 
+                name="password" 
+                value={formData.password}
+                onChange={handleChange} 
+                placeholder="Min 8 chars with A-Z, a-z, 0-9, !@#..."
+                className="w-full mt-1 p-3 pr-11 rounded-lg focus:outline-none transition-all"
+                style={{
+                  border: `1px solid ${passwordTouched && !Object.values(passwordChecks).every(Boolean) ? 'var(--error-main)' : fieldErrors.password ? 'var(--error-main)' : 'var(--border-main)'}`,
+                  color: 'var(--text-primary)',
+                  backgroundColor: 'var(--bg-primary)',
+                  boxShadow: passwordTouched && !Object.values(passwordChecks).every(Boolean) ? '0 0 0 3px var(--error-bg)' : 'none'
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 p-1 rounded-md hover:bg-gray-100 transition"
+                style={{ color: 'var(--text-tertiary)' }}
+                tabIndex={-1}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
             {fieldErrors.password && <p className="text-sm mt-1" style={{color: 'var(--error-main)'}}>{fieldErrors.password}</p>}
-            <p className="text-xs mt-1" style={{color: 'var(--text-tertiary)'}}>Must include: uppercase, lowercase, number & special character</p>
+            
+            {/* Real-time Password Validation Checklist */}
+            {passwordTouched && (
+              <div className="mt-2 space-y-1">
+                {[
+                  { key: 'hasMinLength', label: 'At least 8 characters' },
+                  { key: 'hasUppercase', label: 'One uppercase letter (A-Z)' },
+                  { key: 'hasLowercase', label: 'One lowercase letter (a-z)' },
+                  { key: 'hasNumber', label: 'One number (0-9)' },
+                  { key: 'hasSpecial', label: 'One special character (!@#$...)' },
+                ].map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-2">
+                    {passwordChecks[key] ? (
+                      <Check size={14} className="text-green-600 flex-shrink-0" />
+                    ) : (
+                      <XIcon size={14} className="text-red-500 flex-shrink-0" />
+                    )}
+                    <span className={`text-xs ${passwordChecks[key] ? 'text-green-700' : 'text-red-600'}`}>{label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!passwordTouched && (
+              <p className="text-xs mt-1" style={{color: 'var(--text-tertiary)'}}>Must include: uppercase, lowercase, number & special character</p>
+            )}
           </div>
           
           <button type="submit" className="w-full text-white font-bold py-3 rounded-lg shadow-md transition-all mt-4" style={{background: 'var(--gradient-primary)'}} onMouseEnter={(e) => e.target.style.opacity = '0.9'} onMouseLeave={(e) => e.target.style.opacity = '1'}>

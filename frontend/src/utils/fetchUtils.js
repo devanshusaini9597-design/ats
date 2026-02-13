@@ -19,6 +19,20 @@ export const authenticatedFetch = (url, options = {}) => {
   return fetch(url, {
     ...options,
     headers,
+  }).then(response => {
+    // Auto-logout if user was deleted from DB
+    if (response.status === 401) {
+      response.clone().json().then(data => {
+        if (data.message === 'USER_DELETED' || data.message === 'Token expired. Please login again.') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('isLoggedIn');
+          localStorage.removeItem('userEmail');
+          localStorage.removeItem('userName');
+          window.location.href = '/login';
+        }
+      }).catch(() => {});
+    }
+    return response;
   });
 };
 
