@@ -27,7 +27,7 @@ const Settings = () => {
     setSaveMessage('');
     
     try {
-      const response = await authenticatedFetch('http://localhost:5000/api/settings', {
+      const response = await authenticatedFetch('https://skillnix-ats.onrender.com/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),

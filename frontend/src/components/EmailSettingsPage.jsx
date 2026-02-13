@@ -4,7 +4,8 @@ import Layout from './Layout';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
 
-const BASE = 'http://localhost:5000';
+import API_URL from '../config';
+const BASE = API_URL;
 
 // Common SMTP presets for popular providers
 const SMTP_PRESETS = {

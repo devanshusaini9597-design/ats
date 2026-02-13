@@ -4,7 +4,8 @@ import Layout from './Layout';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
 
-const BASE = 'http://localhost:5000';
+import API_URL from '../config';
+const BASE = API_URL;
 
 const CATEGORY_META = {
   hiring:     { label: 'Hiring Drive',   icon: Briefcase, color: 'indigo', bg: 'bg-indigo-50',  text: 'text-indigo-700', ring: 'ring-indigo-400', badge: 'bg-indigo-100 text-indigo-700' },

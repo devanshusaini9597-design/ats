@@ -3,7 +3,7 @@ import { Calendar, Phone, MapPin, AlertTriangle, Clock, ChevronRight, RefreshCw,
 import { useNavigate } from 'react-router-dom';
 import { authenticatedFetch } from '../utils/fetchUtils';
 
-const BASE_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+import { BASE_API_URL } from '../config';
 
 const CallbackRemindersWidget = () => {
   const navigate = useNavigate();

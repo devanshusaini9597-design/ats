@@ -24,7 +24,7 @@ const ProtectedRoute = ({ children }) => {
 
       try {
         // Hit any authenticated endpoint to verify token + user exists
-        const res = await fetch('http://localhost:5000/api/notifications/count', {
+        const res = await fetch('https://skillnix-ats.onrender.com/api/notifications/count', {
           headers: { 'Authorization': `Bearer ${storedToken}` }
         });
 

@@ -4,7 +4,7 @@ import Layout from './Layout';
 import { BarChart3, Users, Briefcase, Clock, TrendingUp, TrendingDown, ArrowRight, UserPlus, FileText, Loader2 } from 'lucide-react';
 import CallbackRemindersWidget from './CallbackRemindersWidget';
 
-const BASE_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+import { BASE_API_URL } from '../config';
 
 const DashboardPage = () => {
   const navigate = useNavigate();
