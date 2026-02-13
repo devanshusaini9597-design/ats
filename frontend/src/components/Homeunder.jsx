@@ -27,11 +27,11 @@ const PeopleConnectHRHome = () => {
   useEffect(() => {
     const fetchRealTimeData = async () => {
       try {
-        const taskRes = await fetch('https://skillnix-ats.onrender.com/api/daily-task');
+        const taskRes = await fetch('https://skillnix-backend.onrender.com/api/daily-task');
         const taskData = await taskRes.json();
         setTask(taskData.task);
 
-        const updatesRes = await fetch('https://skillnix-ats.onrender.com/api/home-updates');
+        const updatesRes = await fetch('https://skillnix-backend.onrender.com/api/home-updates');
         const updatesData = await updatesRes.json();
         setHomeData(updatesData);
 

@@ -37,7 +37,7 @@ const AnalyticsDashboard = () => {
   const fetchStats = async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
     try {
-      const response = await authenticatedFetch('https://skillnix-ats.onrender.com/api/analytics/dashboard-stats');
+      const response = await authenticatedFetch('https://skillnix-backend.onrender.com/api/analytics/dashboard-stats');
       if (isUnauthorized(response)) { handleUnauthorized(); return; }
       const data = await response.json();
       setStats(data);
@@ -68,7 +68,7 @@ const AnalyticsDashboard = () => {
     setIsExporting(true);
     setExportSuccess(false);
     try {
-      const response = await fetch('https://skillnix-ats.onrender.com/api/export/report', {
+      const response = await fetch('https://skillnix-backend.onrender.com/api/export/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify({ reportType, format: exportFormat, dateRange, customFrom, customTo })
@@ -103,7 +103,7 @@ const AnalyticsDashboard = () => {
   const handlePreview = async () => {
     setPreviewLoading(true);
     try {
-      const response = await fetch('https://skillnix-ats.onrender.com/api/export/preview', {
+      const response = await fetch('https://skillnix-backend.onrender.com/api/export/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify({ reportType, dateRange, customFrom, customTo })

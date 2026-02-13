@@ -4,7 +4,7 @@ import { Plus, MapPin, BookOpen, UserCheck, X, Briefcase, IndianRupee } from 'lu
 import JDLibraryModal from '../components/JDLibraryModal';
 
 const Jobs = () => {
-  const API_URL = 'https://skillnix-ats.onrender.com/jobs';
+  const API_URL = 'https://skillnix-backend.onrender.com/jobs';
   const [jobs, setJobs] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);

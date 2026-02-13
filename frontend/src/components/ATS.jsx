@@ -1213,7 +1213,7 @@ const handleInputChange = async (e) => {
       data.append('resume', file);
 
       try {
-        const response = await fetch('https://skillnix-ats.onrender.com/candidates/parse-logic', {
+        const response = await fetch('https://skillnix-backend.onrender.com/candidates/parse-logic', {
           method: 'POST',
           body: data,
         });

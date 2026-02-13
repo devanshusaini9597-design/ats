@@ -26,7 +26,7 @@ export const useParsing = (fetchCandidates) => {
         
         setIsParsing(true);
         try {
-            const res = await fetch('https://skillnix-ats.onrender.com/candidates/bulk-parse', {
+            const res = await fetch('https://skillnix-backend.onrender.com/candidates/bulk-parse', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ids: selectedIds }),
