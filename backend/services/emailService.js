@@ -57,9 +57,17 @@ const getUserTransporter = async (userId) => {
     // Known providers with explicit SMTP host
     const hostProviders = {
       zoho:      { host: 'smtp.zoho.com',            port: 587 },
-      hostinger: { host: 'smtp.hostinger.com',        port: 587 },
+      hostinger: { host: 'smtp.hostinger.com',        port: 465 },
       godaddy:   { host: 'smtpout.secureserver.net',  port: 465 },
       namecheap: { host: 'mail.privateemail.com',     port: 587 },
+    };
+
+    const commonOpts = {
+      family: 4,
+      connectionTimeout: 30000,
+      greetingTimeout: 30000,
+      socketTimeout: 30000,
+      tls: { rejectUnauthorized: false }
     };
 
     const provider = s.smtpProvider || 'gmail';
@@ -68,7 +76,7 @@ const getUserTransporter = async (userId) => {
       userTransporter = nodemailer.createTransport({
         service: serviceProviders[provider],
         auth: { user: s.smtpEmail, pass: s.smtpAppPassword },
-        family: 4
+        ...commonOpts
       });
     } else if (hostProviders[provider]) {
       const hp = hostProviders[provider];
@@ -77,7 +85,7 @@ const getUserTransporter = async (userId) => {
         port: hp.port,
         secure: hp.port === 465,
         auth: { user: s.smtpEmail, pass: s.smtpAppPassword },
-        family: 4
+        ...commonOpts
       });
     } else {
       // Custom SMTP
@@ -87,7 +95,7 @@ const getUserTransporter = async (userId) => {
         port: port,
         secure: port === 465,
         auth: { user: s.smtpEmail, pass: s.smtpAppPassword },
-        family: 4
+        ...commonOpts
       });
     }
 

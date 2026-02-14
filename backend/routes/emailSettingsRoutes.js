@@ -103,17 +103,25 @@ router.post('/test', async (req, res) => {
     const serviceProviders = { gmail: 'gmail', yahoo: 'Yahoo', outlook: 'Outlook365' };
     const hostProviders = {
       zoho:      { host: 'smtp.zoho.com',            port: 587 },
-      hostinger: { host: 'smtp.hostinger.com',        port: 587 },
+      hostinger: { host: 'smtp.hostinger.com',        port: 465 },
       godaddy:   { host: 'smtpout.secureserver.net',  port: 465 },
       namecheap: { host: 'mail.privateemail.com',     port: 587 },
     };
     const provider = smtpProvider || 'gmail';
 
+    const commonOpts = {
+      family: 4,
+      connectionTimeout: 30000,
+      greetingTimeout: 30000,
+      socketTimeout: 30000,
+      tls: { rejectUnauthorized: false }
+    };
+
     if (serviceProviders[provider]) {
       testTransporter = nodemailer.createTransport({
         service: serviceProviders[provider],
         auth: { user: smtpEmail, pass: actualPassword },
-        family: 4
+        ...commonOpts
       });
     } else if (hostProviders[provider]) {
       const hp = hostProviders[provider];
@@ -122,7 +130,7 @@ router.post('/test', async (req, res) => {
         port: hp.port,
         secure: hp.port === 465,
         auth: { user: smtpEmail, pass: actualPassword },
-        family: 4
+        ...commonOpts
       });
     } else {
       const port = smtpPort || 587;
@@ -131,7 +139,7 @@ router.post('/test', async (req, res) => {
         port: port,
         secure: port === 465,
         auth: { user: smtpEmail, pass: actualPassword },
-        family: 4
+        ...commonOpts
       });
     }
 
@@ -175,6 +183,8 @@ router.post('/test', async (req, res) => {
       msg = 'Authentication failed. Check your email and App Password. Make sure you use a Google App Password, not your regular password.';
     } else if (msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {
       msg = 'Cannot connect to mail server. Check your SMTP settings.';
+    } else if (msg.includes('ETIMEDOUT') || msg.includes('ESOCKET') || msg.includes('ECONNRESET') || msg.includes('timeout') || msg.includes('ENETUNREACH')) {
+      msg = 'Connection timeout. The SMTP server is not reachable from this hosting. Try using Gmail with App Password instead, or check if your email provider allows connections from cloud servers.';
     }
     res.status(400).json({ success: false, message: msg });
   }
