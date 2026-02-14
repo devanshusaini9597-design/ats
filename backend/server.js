@@ -103,7 +103,7 @@ app.use('/uploads', (req, res, next) => {
 }, express.static(path.join(__dirname, 'uploads')));
 
 // Health check endpoint (for Render)
-app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', version: 'v2', timestamp: new Date().toISOString() }));
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URL || 'mongodb://localhost:27017/allinone')
