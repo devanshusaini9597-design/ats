@@ -834,7 +834,8 @@ async function parseResume(buffer, mimetype, filename = '') {
       }
 
       // ── Strategy 3: OCR via tesseract.js (for scanned/image-based PDFs) ──
-      if (text.length < 20 && Tesseract) {
+      // Skip OCR in production (Render has 30s timeout, OCR takes 30-60s)
+      if (text.length < 20 && Tesseract && process.env.NODE_ENV !== 'production') {
         console.log('📄 [Strategy 3/3] PDF appears image-based, running OCR...');
         const ocrText = await ocrPdfBuffer(buffer);
         console.log(`   → OCR extracted ${ocrText.length} chars`);
@@ -842,6 +843,8 @@ async function parseResume(buffer, mimetype, filename = '') {
           text = ocrText;
           extractionMethod = 'tesseract-ocr';
         }
+      } else if (text.length < 20 && process.env.NODE_ENV === 'production') {
+        console.log('📄 [Strategy 3/3] Skipping OCR in production (timeout risk). PDF appears to be scanned/image-based.');
       }
 
       // ── textract as final fallback ──
@@ -882,12 +885,12 @@ async function parseResume(buffer, mimetype, filename = '') {
       }
 
     } else if (mimetype.startsWith('image/')) {
-      // Direct image → OCR
-      if (Tesseract) {
+      // Direct image → OCR (skip in production due to timeout)
+      if (Tesseract && process.env.NODE_ENV !== 'production') {
         text = await ocrImageBuffer(buffer);
         extractionMethod = 'tesseract-image-ocr';
       } else {
-        throw new Error('Image-based resumes require OCR. Install tesseract.js: npm install tesseract.js');
+        throw new Error('This is an image file. Please upload a text-based PDF, DOCX, or TXT resume instead. Image/scanned resumes are not supported on cloud hosting.');
       }
 
     } else {
@@ -907,13 +910,13 @@ async function parseResume(buffer, mimetype, filename = '') {
     if (cleanText.length === 0) {
       const strategies = ['pdf-parse'];
       if (pdfjsLib) strategies.push('pdfjs-dist');
-      if (Tesseract) strategies.push('tesseract-ocr');
+      if (Tesseract && process.env.NODE_ENV !== 'production') strategies.push('tesseract-ocr');
       if (extractText) strategies.push('textract');
 
       throw new Error(
-        `All ${strategies.length} extraction strategies failed (${strategies.join(', ')}). ` +
-        'The file may be encrypted, corrupted, or contain only vector graphics. ' +
-        'Try saving the PDF as a new file or converting to DOCX first.'
+        'This resume appears to be a scanned/image-based PDF. ' +
+        'Please upload a text-based PDF or DOCX file instead. ' +
+        'Tip: Open the PDF, try selecting text — if you can\'t select text, it\'s a scanned image.'
       );
     }
 

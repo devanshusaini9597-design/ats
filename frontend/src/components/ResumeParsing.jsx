@@ -46,10 +46,16 @@ const ResumeParsing = () => {
         formData.append('resume', file);
 
         try {
+          // Add 25s timeout to prevent hanging on slow server
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 25000);
+
           const response = await authenticatedFetch(`${BASE_API_URL}/candidates/parse-logic`, {
             method: 'POST',
             body: formData,
+            signal: controller.signal,
           });
+          clearTimeout(timeoutId);
 
           if (!response.ok) {
             let backendError = 'Failed to parse resume';
@@ -96,12 +102,20 @@ const ResumeParsing = () => {
         } catch (err) {
           // Print fetch/network error to console
           console.error('Resume parsing fetch error:', err);
+          const errorMsg = err.name === 'AbortError'
+            ? 'Request timed out. This resume may be scanned/image-based. Please try a text-based PDF or DOCX.'
+            : err.message;
           newResults.push({
             fileName: file.name,
             success: false,
-            error: err.message,
+            error: errorMsg,
             data: null,
           });
+        }
+
+        // Small delay between files to prevent server overload
+        if (files.length > 1) {
+          await new Promise(r => setTimeout(r, 800));
         }
       }
 

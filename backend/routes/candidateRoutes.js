@@ -449,11 +449,15 @@ router.post('/parse-logic', memoryUpload.single('resume'), async (req, res) => {
             error: err.message
         });
 
+        // Use the parser's error message directly if it's user-friendly
+        const isUserFriendly = err.message.includes('scanned') || err.message.includes('image') || err.message.includes('text-based');
         res.status(500).json({
-            error: 'Resume parsing failed',
+            error: isUserFriendly ? err.message : 'Resume parsing failed',
             details: err.message,
             filename: req.file?.originalname,
-            suggestion: 'Try uploading a PDF, DOC, DOCX, TXT, or RTF file with clear text content'
+            suggestion: isUserFriendly
+              ? 'Upload a text-based PDF or DOCX resume for best results'
+              : 'Try uploading a PDF, DOC, DOCX, TXT, or RTF file with clear text content'
         });
     }
 });
