@@ -112,7 +112,8 @@ router.post('/test', async (req, res) => {
     if (serviceProviders[provider]) {
       testTransporter = nodemailer.createTransport({
         service: serviceProviders[provider],
-        auth: { user: smtpEmail, pass: actualPassword }
+        auth: { user: smtpEmail, pass: actualPassword },
+        family: 4
       });
     } else if (hostProviders[provider]) {
       const hp = hostProviders[provider];
@@ -120,7 +121,8 @@ router.post('/test', async (req, res) => {
         host: hp.host,
         port: hp.port,
         secure: hp.port === 465,
-        auth: { user: smtpEmail, pass: actualPassword }
+        auth: { user: smtpEmail, pass: actualPassword },
+        family: 4
       });
     } else {
       const port = smtpPort || 587;
@@ -128,7 +130,8 @@ router.post('/test', async (req, res) => {
         host: smtpHost || 'smtp.gmail.com',
         port: port,
         secure: port === 465,
-        auth: { user: smtpEmail, pass: actualPassword }
+        auth: { user: smtpEmail, pass: actualPassword },
+        family: 4
       });
     }
 

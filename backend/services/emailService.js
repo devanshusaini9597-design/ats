@@ -13,7 +13,8 @@ const initializeTransporter = () => {
       auth: {
         user: process.env.GMAIL_EMAIL,
         pass: process.env.GMAIL_APP_PASSWORD
-      }
+      },
+      family: 4
     });
   } else {
     defaultTransporter = nodemailer.createTransport({
@@ -23,7 +24,8 @@ const initializeTransporter = () => {
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
-      }
+      },
+      family: 4
     });
   }
 
@@ -65,7 +67,8 @@ const getUserTransporter = async (userId) => {
     if (serviceProviders[provider]) {
       userTransporter = nodemailer.createTransport({
         service: serviceProviders[provider],
-        auth: { user: s.smtpEmail, pass: s.smtpAppPassword }
+        auth: { user: s.smtpEmail, pass: s.smtpAppPassword },
+        family: 4
       });
     } else if (hostProviders[provider]) {
       const hp = hostProviders[provider];
@@ -73,7 +76,8 @@ const getUserTransporter = async (userId) => {
         host: hp.host,
         port: hp.port,
         secure: hp.port === 465,
-        auth: { user: s.smtpEmail, pass: s.smtpAppPassword }
+        auth: { user: s.smtpEmail, pass: s.smtpAppPassword },
+        family: 4
       });
     } else {
       // Custom SMTP
@@ -82,7 +86,8 @@ const getUserTransporter = async (userId) => {
         host: s.smtpHost,
         port: port,
         secure: port === 465,
-        auth: { user: s.smtpEmail, pass: s.smtpAppPassword }
+        auth: { user: s.smtpEmail, pass: s.smtpAppPassword },
+        family: 4
       });
     }
 
