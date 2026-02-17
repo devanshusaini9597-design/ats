@@ -309,6 +309,9 @@ router.get('/', async (req, res) => {
 // Frontend se jab aap single candidate add karengi, toh wo isi route pe aayega
 router.post('/', diskUpload.single('resume'), candidateController.createCandidate);
 
+// --- 2b. BULK CREATE FROM PARSED RESUMES (JSON body, no file) ---
+router.post('/bulk-from-parsed', candidateController.bulkCreateFromParsed);
+
 // --- 3. EXTRACT HEADERS (for column mapping) ---
 router.post('/extract-headers', diskUpload.single('file'), async (req, res) => {
     try {
@@ -761,8 +764,9 @@ router.get('/pending', async (req, res) => {
     try {
         const { category, page = 1, limit = 50, search, batchId } = req.query;
         const userId = req.user.id;
+        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
 
-        const filter = { createdBy: userId };
+        const filter = { createdBy: userIdObj };
         if (category && category !== 'all') filter.category = category;
         if (batchId) filter.batchId = batchId;
         if (search) {
@@ -781,8 +785,8 @@ router.get('/pending', async (req, res) => {
 
         // Get category counts
         const [reviewCount, blockedCount] = await Promise.all([
-            PendingCandidate.countDocuments({ createdBy: userId, category: 'review' }),
-            PendingCandidate.countDocuments({ createdBy: userId, category: 'blocked' })
+            PendingCandidate.countDocuments({ createdBy: userIdObj, category: 'review' }),
+            PendingCandidate.countDocuments({ createdBy: userIdObj, category: 'blocked' })
         ]);
 
         res.json({

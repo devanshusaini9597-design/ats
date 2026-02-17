@@ -1,7 +1,7 @@
 import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { Upload, FileText, CheckCircle, AlertCircle, X, Loader2, AlertTriangle, Edit2, Save, RefreshCw, ArrowLeft, FileSpreadsheet, ShieldCheck, Search, ChevronLeft, ChevronRight, Eye, EyeOff, ArrowRightLeft } from 'lucide-react';
 import Layout from './Layout';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useBlocker, useLocation } from 'react-router-dom';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
@@ -13,6 +13,7 @@ const RECORDS_PER_PAGE = 50;
 
 const AutoImportPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const fileInputRef = useRef(null);
 
@@ -81,6 +82,13 @@ const AutoImportPage = () => {
     return () => window.removeEventListener('beforeunload', handler);
   }, [reviewData]);
 
+  // Block in-app navigation when import data is loaded (sidebar click, back button, etc.)
+  const hasUnsavedData = !!(reviewData && (reviewData.ready?.length || reviewData.review?.length || reviewData.blocked?.length));
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      hasUnsavedData && currentLocation.pathname !== nextLocation.pathname
+  );
+
   const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = () => setIsDragging(false);
 
@@ -125,6 +133,7 @@ const AutoImportPage = () => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${BASE_API_URL}/candidates/bulk-upload-auto`);
         if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.timeout = 600000; // 10 min for large files (15k+ rows)
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
@@ -145,7 +154,8 @@ const AutoImportPage = () => {
           }
           resolve(xhr.responseText);
         };
-        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.onerror = () => reject(new Error('Network error. Check your connection. For 15k+ rows, processing may take several minutes.'));
+        xhr.ontimeout = () => reject(new Error('Upload timed out. For very large files, try splitting into smaller batches (e.g. 5k rows each).'));
         xhr.send(uploadData);
       });
 
@@ -455,6 +465,7 @@ const AutoImportPage = () => {
                         <Upload size={48} className="mx-auto text-blue-500 mb-4" />
                         <p className="text-lg font-bold text-gray-900 mb-1">Drop your file here or click to browse</p>
                         <p className="text-sm text-gray-500 mb-4">Supports CSV, XLSX, XLS (max 50 MB)</p>
+                        <p className="text-xs text-amber-600 mt-2">Large files (15k+ rows) may take a few minutes. Free hosting tiers can timeout — split into smaller batches if needed.</p>
                         <button className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm">
                           <Upload size={18} /> Select File
                         </button>
@@ -790,6 +801,42 @@ const AutoImportPage = () => {
               <h3 className="text-lg font-bold text-gray-900 mb-1">Imported Successfully</h3>
               <p className="text-sm text-gray-600 mb-4"><strong>{importConfirmation.candidateName}</strong> has been saved to the database.</p>
               <button onClick={() => { setImportConfirmation(null); setReviewFilter('ready'); }} className="w-full px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors">Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* Navigation warning modal - shown when user tries to leave with unsaved import data */}
+        {blocker.state === 'blocked' && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle size={24} className="text-amber-600" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">Unsaved Import Data</h3>
+                  <p className="text-sm text-gray-600 mb-4">
+                    You have unsaved import data. If you leave now, your data will be lost and you will need to upload the file again.
+                  </p>
+                  <p className="text-xs text-gray-500 mb-4">
+                    Your draft may be restored if you return to this page in a new session.
+                  </p>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => blocker.reset?.()}
+                      className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+                    >
+                      Stay
+                    </button>
+                    <button
+                      onClick={() => blocker.proceed?.()}
+                      className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+                    >
+                      Leave
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

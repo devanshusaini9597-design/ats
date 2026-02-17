@@ -215,10 +215,57 @@ const ResumeParsing = () => {
     URL.revokeObjectURL(url);
   };
 
-  // Add to candidates directly
+  // Add single candidate (navigate to add-candidate with prefill)
   const addToCandidate = (resultData) => {
     localStorage.setItem('parsedResumeData', JSON.stringify(resultData));
     navigate('/add-candidate');
+  };
+
+  // Add all successfully parsed resumes as candidates at once
+  const [addingAll, setAddingAll] = useState(false);
+  const addAllAsCandidates = async () => {
+    const successful = results.filter(r => r.success && r.data).map(r => r.data);
+    if (!successful.length) {
+      toast.error('No successfully parsed resumes to add.');
+      return;
+    }
+
+    const candidates = successful.map(c => ({
+      name: c.name || '',
+      email: c.email || '',
+      contact: c.contact || '',
+      position: c.position || '',
+      company: c.company || c.companyName || '',
+      experience: c.experience || '',
+      location: c.location || '',
+      skills: c.skills || '',
+      education: c.education || '',
+      ctc: c.ctc || 'Not disclosed'
+    }));
+
+    setAddingAll(true);
+    try {
+      const response = await authenticatedFetch(`${BASE_API_URL}/candidates/bulk-from-parsed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidates })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Failed to add candidates');
+
+      const { created = 0, skipped = 0, errors: errCount = 0 } = data;
+      let msg = `Added ${created} candidate${created !== 1 ? 's' : ''}.`;
+      if (skipped) msg += ` Skipped ${skipped} (duplicate).`;
+      if (errCount) msg += ` ${errCount} failed (validation).`;
+      toast.success(msg);
+      if (created > 0) {
+        setTimeout(() => navigate('/ats'), 1500);
+      }
+    } catch (err) {
+      toast.error(err.message || 'Failed to add candidates');
+    } finally {
+      setAddingAll(false);
+    }
   };
 
   return (
@@ -287,15 +334,31 @@ const ResumeParsing = () => {
             {/* Results Section */}
             {results.length > 0 && (
               <div className="space-y-4">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
                   <h2 className="text-xl font-bold text-gray-900">Parsing Results</h2>
-                  <button
-                    onClick={downloadResults}
-                    disabled={results.filter(r => r.success).length === 0}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-                  >
-                    📥 Download Results
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={addAllAsCandidates}
+                      disabled={addingAll || results.filter(r => r.success).length === 0}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
+                    >
+                      {addingAll ? (
+                        <>
+                          <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          Adding...
+                        </>
+                      ) : (
+                        <>➕ Add All as Candidates</>
+                      )}
+                    </button>
+                    <button
+                      onClick={downloadResults}
+                      disabled={results.filter(r => r.success).length === 0}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                    >
+                      📥 Download Results
+                    </button>
+                  </div>
                 </div>
 
                 {/* Summary Stats */}

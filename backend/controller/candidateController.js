@@ -2102,6 +2102,94 @@ exports.createCandidate = async (req, res) => {
     }
 };
 
+// Bulk create candidates from parsed resumes (no file upload)
+exports.bulkCreateFromParsed = async (req, res) => {
+    try {
+        const { candidates } = req.body;
+        if (!Array.isArray(candidates) || candidates.length === 0) {
+            return res.status(400).json({ success: false, message: 'candidates array is required and must not be empty' });
+        }
+
+        const userId = req.user.id;
+        const created = [];
+        const skipped = [];
+        const errors = [];
+
+        const LocationService = require('../services/locationService');
+
+        for (let i = 0; i < candidates.length; i++) {
+            const c = candidates[i];
+            const name = (c.name || '').trim();
+            const email = (c.email || '').trim().toLowerCase();
+            const contact = (c.contact || '').toString().replace(/\D/g, '').slice(-10);
+
+            if (!name || name.length < 2) {
+                errors.push({ index: i + 1, name: name || '(empty)', reason: 'Name is required (min 2 chars)' });
+                continue;
+            }
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+                errors.push({ index: i + 1, name, reason: 'Valid email is required' });
+                continue;
+            }
+            if (!contact || contact.length < 7) {
+                errors.push({ index: i + 1, name, reason: 'Valid contact (7+ digits) is required' });
+                continue;
+            }
+
+            try {
+                const existing = await Candidate.findOne({
+                    $or: [{ email }, { contact }],
+                    createdBy: userId
+                });
+                if (existing) {
+                    skipped.push({ index: i + 1, name, reason: existing.email === email ? 'Email exists' : 'Contact exists' });
+                    continue;
+                }
+
+                const payload = {
+                    name: normalizeText(name),
+                    email,
+                    contact,
+                    ctc: (c.ctc || '').trim() || 'Not disclosed',
+                    position: (c.position || '').trim() || '',
+                    companyName: (c.companyName || c.company || '').trim() || '',
+                    experience: (c.experience || '').toString().trim() || '',
+                    location: (c.location || '').trim() || '',
+                    remark: (c.skills ? `Skills: ${c.skills}` : '') + (c.education ? ` | Education: ${c.education}` : '').replace(/^\s*\|\s*/, ''),
+                    status: 'Applied',
+                    createdBy: userId,
+                    date: new Date().toISOString().split('T')[0]
+                };
+
+                if (payload.location && LocationService.detectState) {
+                    payload.state = LocationService.detectState(payload.location);
+                }
+
+                const doc = new Candidate(payload);
+                await doc.save();
+                created.push({ index: i + 1, name, email });
+            } catch (err) {
+                if (err.code === 11000) {
+                    skipped.push({ index: i + 1, name, reason: 'Duplicate (email or contact)' });
+                } else {
+                    errors.push({ index: i + 1, name, reason: err.message || 'Save failed' });
+                }
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            created: created.length,
+            skipped: skipped.length,
+            errors: errors.length,
+            details: { created, skipped, errors }
+        });
+    } catch (error) {
+        console.error('bulkCreateFromParsed error:', error);
+        res.status(500).json({ success: false, message: error.message || 'Server error' });
+    }
+};
+
 exports.updateCandidate = async (req, res) => {
     try {
         const { id } = req.params;
@@ -2171,12 +2259,18 @@ exports.shareCandidate = async (req, res) => {
             });
         }
 
-        // Add sharing entries
-        const shareEntries = sharedWith.map(memberId => ({
-            userId: memberId,
-            sharedAt: new Date(),
-            sharedBy: userId
-        }));
+        // Add sharing entries: sharedWith.userId must be the recipient's User._id (not TeamMember._id)
+        const shareEntries = [];
+        for (const member of teamMembers) {
+            const recipientUser = await User.findOne({ email: member.email.toLowerCase() });
+            if (recipientUser) {
+                shareEntries.push({
+                    userId: recipientUser._id,
+                    sharedAt: new Date(),
+                    sharedBy: userId
+                });
+            }
+        }
 
         const result = await Candidate.updateMany(
             { _id: { $in: ids } },
