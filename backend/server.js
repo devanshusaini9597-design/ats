@@ -1,11 +1,21 @@
 
 
 require('dotenv').config();
+
+// Global crash handlers - prevent server from dying on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception (server stayed alive):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ Unhandled Rejection (server stayed alive):', reason?.message || reason);
+});
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const bcrypt = require('bcrypt');
 const homeRoutes = require('./routes/home');
 const companyRoutes = require('./routes/companyRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
@@ -17,9 +27,12 @@ const clientRoutes = require('./routes/clientRoutes');
 const sourceRoutes = require('./routes/sourceRoutes');
 const exportRoutes = require('./routes/exportRoutes');
 const emailSettingsRoutes = require('./routes/emailSettingsRoutes');
+const companyEmailSettingsRoutes = require('./routes/companyEmailSettingsRoutes');  // ✅ Company-wide email config
 const notificationRoutes = require('./routes/notificationRoutes');
+const teamRoutes = require('./routes/teamRoutes');
 const { startNotificationScheduler } = require('./services/notificationService');
-const { verifyToken, generateToken } = require('./middleware/authMiddleware');
+const { verifyToken, generateToken, JWT_SECRET } = require('./middleware/authMiddleware');
+const { normalizeText } = require('./utils/textNormalize');
 
 // Models Import (Sirf User aur Job yahan rakhein, Candidate routes mein handle hoga)
 const Job = require('./models/Job');
@@ -60,8 +73,10 @@ app.use('/api/positions', positionRoutes);  // Protected
 app.use('/api/clients', clientRoutes);  // Protected
 app.use('/api/sources', sourceRoutes);  // Protected
 app.use('/api/export', verifyToken, exportRoutes);  // Protected
-app.use('/api/email-settings', verifyToken, emailSettingsRoutes);  // Protected
+app.use('/api/email-settings', verifyToken, emailSettingsRoutes);  // Protected - per-user email settings
+app.use('/api/company-email-settings', verifyToken, companyEmailSettingsRoutes);  // Protected - company-wide email settings (ENTERPRISE)
 app.use('/api/notifications', verifyToken, notificationRoutes);  // Protected
+app.use('/api/team', teamRoutes);  // Protected (verifyToken inside router)
 
 // Static Folder for Uploads - serve with inline disposition for preview
 const uploadDir = 'uploads';
@@ -211,30 +226,157 @@ mongoose.connection.once('open', async () => {
 });
 
 // --- USER SCHEMA ---
+/**
+ * USER SCHEMA - INCLUDES OPTIONAL PER-USER EMAIL CONFIGURATION
+ * 
+ * emailSettings FIELD PURPOSE:
+ * Allows each user to configure their own personal email (different from company-wide config)
+ * 
+ * USE CASE:
+ * - Some employees want to send from their personal Gmail
+ * - Some want personal Zoho Zeptomail account
+ * - Others just use company-wide config (falls back automatically)
+ * 
+ * DATABASE SECURITY - SENSITIVE FIELDS:
+ * ⚠️  CRITICAL: These fields contain authentication credentials:
+ *     - smtpAppPassword: Plain text password (should be app-specific password, not user password)
+ *     - zohoZeptomailApiKey: Can authenticate to Zoho API (same risk as password)
+ *
+ * ✅ PROTECTION MEASURES:
+ *     - NEVER return full credentials to frontend (only return hasPassword: boolean flags)
+ *     - These are stored at-rest in MongoDB (no encryption yet - TODO: Add field-level encryption)
+ *     - Only exposed to backend process and HTTPS API calls to Zoho
+ *     - Never logged in error messages (avoid console.log with emailSettings)
+ *     - All endpoints requiring these use verifyToken middleware
+ *     - TODO: Add role-based access - users only modify their own emailSettings
+ *
+ * ✅ CASCADING PRIORITY (when sending email):
+ *     1. If user.emailSettings.isConfigured? → Use their personal config
+ *     2. If not, check CompanyEmailConfig → ALL employees share company API key
+ *     3. If neither, email cannot be sent (error)
+ * 
+ * FRONTEND INTERACTION:
+ * - emailSettingsRoutes.js always masks credentials when returning user data
+ * - Frontend shows "API Key: ••••••••••••••" not the actual key
+ * - Only full credentials stored/transmitted server-side
+ */
 const userSchema = new mongoose.Schema({
     name: { type: String, default: '' },
     email: { type: String, required: true, unique: true },
     phone: { type: String, default: '' },
     password: { type: String, required: true },
+    profilePicture: { type: String, default: '' },
     emailSettings: {
+        // SMTP Configuration - User's personal SMTP (optional, overrides company config)
         smtpEmail: { type: String, default: '' },
-        smtpAppPassword: { type: String, default: '' },
-        smtpProvider: { type: String, default: 'gmail' },  // gmail | custom
+        smtpAppPassword: { type: String, default: '' },  // ⚠️  SENSITIVE - Never expose via API
+        smtpProvider: { type: String, default: 'gmail' },  // gmail | zoho | custom
         smtpHost: { type: String, default: '' },
         smtpPort: { type: Number, default: 587 },
-        isConfigured: { type: Boolean, default: false }
+        
+        // Zoho Zeptomail Configuration - User's personal API (optional, overrides company config)
+        zohoZeptomailApiKey: { type: String, default: '' },  // ⚠️  SENSITIVE - Never expose via API (mask as •••••)
+        zohoZeptomailApiUrl: { type: String, default: '' },  // e.g., https://api.zeptomail.com/ or https://api.zeptomail.eu/
+        zohoZeptomailBounceAddress: { type: String, default: '' },  // For bounce handling
+        zohoZeptomailFromEmail: { type: String, default: '' },  // Email to send from
+        
+        isConfigured: { type: Boolean, default: false },  // Set to true when user configures either SMTP or Zoho
+        emailProvider: { type: String, default: 'smtp' }  // 'smtp' or 'zoho-zeptomail' (which to use)
     }
-});
+}, { timestamps: true });
 const User = mongoose.model('User', userSchema);
+
+// ─── COMPANY EMAIL CONFIGURATION SCHEMA (Enterprise-wide settings) ───
+/**
+ * DATABASE STRUCTURE FOR COMPANY-WIDE EMAIL CONFIGURATION
+ * 
+ * PURPOSE:
+ * Stores single email configuration that ALL employees use automatically.
+ * Instead of creating 30-50 individual Zoho Zeptomail accounts, company 
+ * admin creates ONE and all employees share it.
+ * 
+ * SECURITY NOTES:
+ * ⚠️  SENSITIVE DATA STORAGE:
+ *   - zohoZeptomailApiKey: Treat like a password (can authenticate to Zoho)
+ *   - smtpAppPassword: Same sensitivity as API key
+ *   - These should ideally be encrypted at-rest in MongoDB 
+ *   - Currently stored as plain text (TODO: Add field-level encryption)
+ * 
+ * ✅ EXPOSURE PREVENTION:
+ *   - Routes always mask these values before returning to frontend
+ *   - Frontend only receives boolean flags (hasZohoApiKey, hasSmtpPassword)
+ *   - Full values only used server-side for API calls to Zoho
+ *   - Never logged in error messages (be careful with console.log)
+ *   - Never sent to analytics/monitoring services
+ * 
+ * ✅ ACCESS CONTROL:
+ *   - All config routes require JWT (verifyToken middleware)
+ *   - TODO: Add admin/owner role check to prevent regular users changing
+ *   - TODO: Rate limit config changes (e.g., max 5 changes/hour)
+ * 
+ * ✅ AUDIT TRAIL:
+ *   - configuredBy: Which user (admin) set this up
+ *   - configuredAt: When it was first configured
+ *   - lastModifiedBy: Which user last changed it
+ *   - lastModifiedAt: When it was last modified
+ *   - You can audit who made what changes to email config
+ * 
+ * MULTI-TENANT TODO:
+ *   - Currently hardcoded as companyId: 'default-company'
+ *   - For true multi-tenant, change to companyId: req.user.companyId
+ *   - Then each company has isolated email config, no cross-contamination
+ */
+const companyEmailConfigSchema = new mongoose.Schema({
+    // Only one config per company (ideally one per organization/workspace)
+    companyId: { type: String, default: 'default-company' },  // For multi-tenant scenarios
+    
+    // ✅ Zoho Zeptomail (Company-wide - all employees use SAME API key)
+    // SECURITY: These are SENSITIVE - treat like passwords
+    zohoZeptomailApiKey: { type: String, default: '' },  // API authentication key
+    zohoZeptomailApiUrl: { type: String, default: 'https://api.zeptomail.com/' },  // API endpoint
+    zohoZeptomailFromEmail: { type: String, default: '' },  // Company domain email (e.g., noreply@company.com)
+    zohoZeptomailBounceAddress: { type: String, default: '' },  // Where to route bounced emails
+    
+    // SMTP (Company-wide fallback)
+    // SECURITY: smtpAppPassword is also SENSITIVE
+    smtpEmail: { type: String, default: '' },
+    smtpAppPassword: { type: String, default: '' },  // NOT plain password, should be app-specific password
+    smtpProvider: { type: String, default: 'gmail' },  // 'gmail', 'yahoo', 'outlook', 'custom', 'zoho-smtp'
+    smtpHost: { type: String, default: '' },
+    smtpPort: { type: Number, default: 587 },
+    
+    // Configuration status
+    primaryProvider: { type: String, default: 'zoho-zeptomail' },  // Which to use: 'zoho-zeptomail' or 'smtp'
+    isConfigured: { type: Boolean, default: false },
+    
+    // Audit trail - who did what and when
+    configuredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },  // Admin who configured it
+    configuredAt: { type: Date, default: Date.now },
+    lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    lastModifiedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const CompanyEmailConfig = mongoose.model('CompanyEmailConfig', companyEmailConfigSchema);
 
 /* ================= AUTH ROUTES ================= */
 app.post('/api/login', async (req, res) => {
     try {
+        console.log('🔵 [LOGIN] Request received:', { email: req.body?.email, passwordLength: req.body?.password?.length || 0 });
+        
         const { email, password } = req.body;
+        
+        if (!email || !password) {
+            console.log('🔴 [LOGIN] Missing email or password');
+            return res.status(400).json({ message: 'Email and password required' });
+        }
+        
+        console.log('🔵 [LOGIN] Querying User model for email:', email);
         const user = await User.findOne({ email });
+        console.log('🔵 [LOGIN] User lookup result:', user ? `Found user ${user.email}` : 'User not found');
         
         // Check if email exists
         if (!user) {
+            console.log('🟡 [LOGIN] Email not found:', email);
             return res.status(401).json({ 
                 message: "email_not_found",
                 displayMessage: "Email not registered. Please sign up first."
@@ -242,22 +384,57 @@ app.post('/api/login', async (req, res) => {
         }
         
         // Check if password is correct
-        if (user.password !== password) {
+        console.log('🔵 [LOGIN] Comparing passwords...');
+        
+        // Try bcrypt first (if password is hashed), then fallback to plain text (for backward compatibility)
+        let passwordMatch = false;
+        
+        if (user.password.startsWith('$2')) {
+            // Password is hashed with bcrypt
+            try {
+                passwordMatch = await bcrypt.compare(password, user.password);
+                console.log('🔵 [LOGIN] Bcrypt comparison result:', passwordMatch);
+            } catch (bcryptErr) {
+                console.error('🔴 [LOGIN] Bcrypt comparison error:', bcryptErr.message);
+                // Fallback to plain text comparison
+                passwordMatch = (user.password === password);
+            }
+        } else {
+            // Plain text password (backward compatibility)
+            console.log('🔵 [LOGIN] Using plain text comparison (backward compatibility)');
+            passwordMatch = (user.password === password);
+            
+            // If plain text match succeeds, upgrade to hashed password
+            if (passwordMatch) {
+                console.log('🔵 [LOGIN] Upgrading plain text password to bcrypt hash...');
+                const hashedPassword = await bcrypt.hash(password, 10);
+                user.password = hashedPassword;
+                await user.save();
+                console.log('🟢 [LOGIN] Password upgraded to bcrypt hash');
+            }
+        }
+        
+        if (!passwordMatch) {
+            console.log('🟡 [LOGIN] Password mismatch for user:', email);
             return res.status(401).json({ 
                 message: "invalid_password",
                 displayMessage: "Invalid password. Please try again."
             });
         }
         
+        console.log('🟢 [LOGIN] Password correct, generating token...');
         // Generate JWT token
         const token = generateToken(user);
+        console.log('🟢 [LOGIN] Token generated successfully');
         
         res.json({ 
             message: "Login Successful", 
             token: token,
             user: { name: user.name || '', email: user.email, phone: user.phone || '' } 
         });
+        console.log('🟢 [LOGIN] Response sent successfully for user:', email);
     } catch (err) { 
+        console.error('🔴 [LOGIN] ERROR:', err.message, err.stack);
         res.status(500).json({ message: err.message }); 
     }
 });
@@ -265,19 +442,309 @@ app.post('/api/login', async (req, res) => {
 /* ================= REGISTER ROUTE ================= */
 app.post('/register', async (req, res) => {
     try {
+        console.log('🔵 [REGISTER] Request received for email:', req.body?.email);
+        
         const { name, email, phone, password } = req.body;
-        if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
+        if (!email || !password) {
+            console.log('🟡 [REGISTER] Missing email or password');
+            return res.status(400).json({ message: 'Email and password required' });
+        }
 
+        console.log('🔵 [REGISTER] Checking if user exists:', email);
         const existing = await User.findOne({ email });
-        if (existing) return res.status(400).json({ message: 'User already exists' });
+        if (existing) {
+            console.log('🟡 [REGISTER] User already exists:', email);
+            return res.status(400).json({ message: 'User already exists' });
+        }
 
-        const newUser = new User({ name: name || '', email, phone: phone || '', password });
+        console.log('🔵 [REGISTER] Hashing password and creating new user for email:', email);
+        
+        // Hash the password with bcrypt
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        const newUser = new User({ 
+            name: normalizeText(name || ''), 
+            email, 
+            phone: phone?.trim() || '', 
+            password: hashedPassword 
+        });
         await newUser.save();
-
+        
+        console.log('🟢 [REGISTER] User created successfully with hashed password:', email);
         return res.status(201).json({ message: 'Registration successful' });
     } catch (err) {
-        console.error('Register Error:', err.message);
+        console.error('🔴 [REGISTER] ERROR:', err.message, err.stack);
         return res.status(500).json({ message: 'Server error' });
+    }
+});
+
+/* ================= PROFILE ROUTES ================= */
+
+// GET profile
+app.get('/api/profile', verifyToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('-password -emailSettings');
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+        res.json({ success: true, user: { name: user.name, email: user.email, phone: user.phone, profilePicture: user.profilePicture || '' } });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// UPDATE profile (name, phone)
+app.put('/api/profile', verifyToken, async (req, res) => {
+    try {
+        const { name, phone } = req.body;
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+        if (name !== undefined) user.name = normalizeText(name);
+        if (phone !== undefined) user.phone = phone.trim();
+        await user.save();
+
+        // Return updated token with new name
+        const token = generateToken(user);
+        res.json({ success: true, message: 'Profile updated successfully', user: { name: user.name, email: user.email, phone: user.phone, profilePicture: user.profilePicture || '' }, token });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// UPLOAD profile picture
+const multerProfile = require('multer');
+const profilePicUpload = multerProfile({
+    storage: multerProfile.diskStorage({
+        destination: 'uploads/',
+        filename: (req, file, cb) => {
+            const ext = path.extname(file.originalname) || '.jpg';
+            cb(null, `profile-${req.user.id}-${Date.now()}${ext}`);
+        }
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (allowed.includes(ext)) cb(null, true);
+        else cb(new Error('Only image files (JPG, PNG, GIF, WebP) are allowed'));
+    }
+});
+
+app.put('/api/profile/picture', verifyToken, profilePicUpload.single('profilePicture'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ success: false, message: 'No image file provided' });
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+        // Delete old profile picture if exists
+        if (user.profilePicture) {
+            const oldPath = path.join(__dirname, user.profilePicture);
+            if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        }
+
+        user.profilePicture = `/uploads/${req.file.filename}`;
+        await user.save();
+
+        res.json({ success: true, message: 'Profile picture updated', profilePicture: user.profilePicture });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+app.delete('/api/profile/picture', verifyToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+        if (user.profilePicture) {
+            const picPath = path.join(__dirname, user.profilePicture);
+            if (fs.existsSync(picPath)) fs.unlinkSync(picPath);
+        }
+        user.profilePicture = '';
+        await user.save();
+
+        res.json({ success: true, message: 'Profile picture removed' });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// CHANGE password
+app.put('/api/profile/change-password', verifyToken, async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) return res.status(400).json({ success: false, message: 'Current and new password required' });
+        if (newPassword.length < 8) return res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
+
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+        // Verify current password using bcrypt (with backward compatibility for plain text)
+        let passwordMatch = false;
+        if (user.password.startsWith('$2')) {
+            // Password is hashed with bcrypt
+            try {
+                passwordMatch = await bcrypt.compare(currentPassword, user.password);
+            } catch (bcryptErr) {
+                // Fallback to plain text comparison
+                passwordMatch = (user.password === currentPassword);
+            }
+        } else {
+            // Plain text password (backward compatibility)
+            passwordMatch = (user.password === currentPassword);
+        }
+        
+        if (!passwordMatch) {
+            return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+        }
+
+        // Hash the new password before saving
+        user.password = await bcrypt.hash(newPassword, 10);
+        await user.save();
+        res.json({ success: true, message: 'Password changed successfully' });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/* ================= PASSWORD RESET ROUTES ================= */
+const jwt = require('jsonwebtoken');
+const { sendEmail } = require('./services/emailService');
+
+// Step 1: Request password reset (sends email with reset link)
+app.post('/api/auth/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
+
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        if (!user) {
+            // Don't reveal if user exists or not (security best practice)
+            return res.json({ success: true, message: 'If this email is registered, you will receive a reset link.' });
+        }
+
+        // Generate a short-lived reset token (15 minutes)
+        const resetToken = jwt.sign(
+            { id: user._id, email: user.email, purpose: 'password-reset' },
+            JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        // Build reset URL (use frontend URL)
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
+
+        // Send reset email
+        try {
+            // Try to use company/user email config for sending
+            const htmlBody = `
+                <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <div style="text-align: center; padding: 30px 20px; background: linear-gradient(135deg, #4F46E5, #7C3AED); border-radius: 12px 12px 0 0;">
+                        <h1 style="color: white; margin: 0; font-size: 24px;">Password Reset</h1>
+                        <p style="color: rgba(255,255,255,0.8); margin: 8px 0 0;">SkillNix ATS</p>
+                    </div>
+                    <div style="padding: 30px 20px; background: #ffffff; border: 1px solid #e5e7eb; border-top: none;">
+                        <p style="color: #374151; font-size: 15px; line-height: 1.6;">Hi ${user.name || 'there'},</p>
+                        <p style="color: #374151; font-size: 15px; line-height: 1.6;">We received a request to reset your password. Click the button below to create a new password:</p>
+                        <div style="text-align: center; margin: 30px 0;">
+                            <a href="${resetUrl}" style="display: inline-block; padding: 14px 32px; background: #4F46E5; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 15px;">Reset My Password</a>
+                        </div>
+                        <p style="color: #6B7280; font-size: 13px; line-height: 1.6;">This link expires in <strong>15 minutes</strong>. If you didn't request this, you can safely ignore this email.</p>
+                        <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;">
+                        <p style="color: #9CA3AF; font-size: 12px;">If the button doesn't work, copy and paste this URL:<br><a href="${resetUrl}" style="color: #4F46E5; word-break: break-all;">${resetUrl}</a></p>
+                    </div>
+                </div>
+            `;
+
+            await sendEmail(
+                user.email,
+                'Reset Your Password - SkillNix ATS',
+                htmlBody,
+                `Reset your password: ${resetUrl} (expires in 15 minutes)`,
+                { userId: user._id }
+            );
+        } catch (emailErr) {
+            console.error('[PASSWORD-RESET] Email send failed:', emailErr.message);
+            // Even if email fails, don't crash - user can still use the token if they have it
+            // But we should let the user know
+            if (emailErr.message === 'EMAIL_NOT_CONFIGURED') {
+                // Fallback: return the token directly so the user can reset via URL
+                return res.json({
+                    success: true,
+                    message: 'Email service not configured. Use the direct reset link.',
+                    resetUrl: resetUrl
+                });
+            }
+        }
+
+        res.json({ success: true, message: 'If this email is registered, you will receive a reset link.' });
+    } catch (err) {
+        console.error('[PASSWORD-RESET] Error:', err.message);
+        res.status(500).json({ success: false, message: 'Failed to process password reset request' });
+    }
+});
+
+// Step 2: Verify reset token
+app.get('/api/auth/verify-reset-token', async (req, res) => {
+    try {
+        const { token } = req.query;
+        if (!token) return res.status(400).json({ success: false, message: 'Token is required' });
+
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.purpose !== 'password-reset') {
+            return res.status(400).json({ success: false, message: 'Invalid token type' });
+        }
+
+        res.json({ success: true, email: decoded.email });
+    } catch (err) {
+        if (err.name === 'TokenExpiredError') {
+            return res.status(400).json({ success: false, message: 'Reset link has expired. Please request a new one.' });
+        }
+        res.status(400).json({ success: false, message: 'Invalid or expired reset link' });
+    }
+});
+
+// Step 3: Reset password with token
+app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+        if (!token || !newPassword) return res.status(400).json({ success: false, message: 'Token and new password required' });
+        if (newPassword.length < 8) return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
+
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.purpose !== 'password-reset') {
+            return res.status(400).json({ success: false, message: 'Invalid token type' });
+        }
+
+        const user = await User.findById(decoded.id);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+        user.password = await bcrypt.hash(newPassword, 10);
+        await user.save();
+
+        res.json({ success: true, message: 'Password reset successfully. You can now login with your new password.' });
+    } catch (err) {
+        if (err.name === 'TokenExpiredError') {
+            return res.status(400).json({ success: false, message: 'Reset link has expired. Please request a new one.' });
+        }
+        res.status(500).json({ success: false, message: 'Failed to reset password' });
+    }
+});
+
+// GET account stats (for profile page)
+app.get('/api/profile/stats', verifyToken, async (req, res) => {
+    try {
+        const candidateCount = await Candidate.countDocuments({ createdBy: req.user.id });
+        const user = await User.findById(req.user.id).select('emailSettings.isConfigured createdAt');
+        const memberSince = user?.createdAt || (user?._id ? user._id.getTimestamp() : null);
+        res.json({
+            success: true,
+            stats: {
+                totalCandidates: candidateCount,
+                emailConfigured: user?.emailSettings?.isConfigured || false,
+                memberSince
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 

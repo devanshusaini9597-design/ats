@@ -5,6 +5,8 @@ import Layout from './Layout';
 import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
+import ConfirmationModal from './ConfirmationModal';
+import { formatByFieldName } from '../utils/textFormatter';
 
 const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
   const navigate = useNavigate();
@@ -15,6 +17,8 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [formData, setFormData] = useState({ name: '', description: '' });
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -41,7 +45,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
       }
     } catch (error) {
       console.error('Error fetching data:', error);
-      toast.error('Error fetching data');
+      if (error.message !== 'Failed to fetch') toast.error('Error fetching data');
     } finally {
       setIsLoading(false);
     }
@@ -50,7 +54,13 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!formData.name.trim()) {
+    // Format the name field before sending
+    const formattedData = {
+      name: formatByFieldName('name', formData.name),
+      description: formatByFieldName('description', formData.description)
+    };
+
+    if (!formattedData.name.trim()) {
       toast.warning('Name is required');
       return;
     }
@@ -67,7 +77,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(formattedData)
       });
 
       if (isUnauthorized(response)) {
@@ -91,14 +101,16 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     }
   };
 
-  const handleDelete = async (item) => {
-    if (!window.confirm(`Are you sure you want to delete "${item.name}"?`)) {
-      return;
-    }
+  const handleDeleteConfirm = (item) => {
+    setDeleteConfirm(item);
+  };
 
+  const handleDelete = async () => {
+    if (!deleteConfirm) return;
+    setIsDeleting(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`${BASE_API_URL}${apiEndpoint}/${item._id}`, {
+      const response = await fetch(`${BASE_API_URL}${apiEndpoint}/${deleteConfirm._id}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -117,6 +129,9 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     } catch (error) {
       console.error('Error deleting data:', error);
       toast.error('Error deleting data');
+    } finally {
+      setIsDeleting(false);
+      setDeleteConfirm(null);
     }
   };
 
@@ -228,7 +243,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                               <Edit size={16} />
                             </button>
                             <button
-                              onClick={() => handleDelete(item)}
+                              onClick={() => handleDeleteConfirm(item)}
                               className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                               title="Delete"
                             >
@@ -259,7 +274,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                   <input
                     type="text"
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    onChange={(e) => setFormData({ ...formData, name: formatByFieldName('name', e.target.value) })}
                     placeholder={`Enter ${title.slice(0, -1).toLowerCase()} name`}
                     required
                     className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
@@ -296,6 +311,17 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
             </div>
           </div>
         )}
+        {/* Delete Confirmation Modal */}
+        <ConfirmationModal
+          isOpen={!!deleteConfirm}
+          onClose={() => setDeleteConfirm(null)}
+          onConfirm={handleDelete}
+          title={`Delete ${title.slice(0, -1)}`}
+          message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
+          confirmText={`Delete ${title.slice(0, -1)}`}
+          type="delete"
+          isLoading={isDeleting}
+        />
       </div>
     </Layout>
   );

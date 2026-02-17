@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import DashboardLayout from './DashboardLayout';
 import { Save, AlertCircle } from 'lucide-react';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
+import BASE_API_URL from '../config';
 
 const Settings = () => {
   const [settings, setSettings] = useState({
@@ -27,7 +28,7 @@ const Settings = () => {
     setSaveMessage('');
     
     try {
-      const response = await authenticatedFetch('https://skillnix-backend.onrender.com/api/settings', {
+      const response = await authenticatedFetch(`${BASE_API_URL}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),

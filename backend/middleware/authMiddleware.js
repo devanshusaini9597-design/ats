@@ -33,11 +33,19 @@ const verifyToken = async (req, res, next) => {
 
 // Generate JWT token
 const generateToken = (user) => {
-    return jwt.sign(
-        { id: user._id, email: user.email, name: user.name || '' },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-    );
+    try {
+        console.log('🔵 [TOKEN] Generating JWT for user:', user.email);
+        const token = jwt.sign(
+            { id: user._id, email: user.email, name: user.name || '' },
+            JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+        console.log('🟢 [TOKEN] JWT generated successfully, length:', token.length);
+        return token;
+    } catch (err) {
+        console.error('🔴 [TOKEN] Error generating JWT:', err.message);
+        throw err;
+    }
 };
 
 module.exports = { verifyToken, generateToken, JWT_SECRET };

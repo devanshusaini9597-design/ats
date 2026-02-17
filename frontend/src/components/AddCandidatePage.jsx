@@ -6,6 +6,7 @@ import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
+import { formatByFieldName } from '../utils/textFormatter';
 
 const AddCandidatePage = () => {
   const navigate = useNavigate();
@@ -13,7 +14,6 @@ const AddCandidatePage = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isAutoParsing, setIsAutoParsing] = useState(false);
   const [positions, setPositions] = useState([]);
-  const [companies, setCompanies] = useState([]);
   const [clients, setClients] = useState([]);
   const [sources, setSources] = useState([]);
 
@@ -64,9 +64,8 @@ const AddCandidatePage = () => {
         const token = localStorage.getItem('token');
         const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
 
-        const [positionsRes, companiesRes, clientsRes, sourcesRes] = await Promise.all([
+        const [positionsRes, clientsRes, sourcesRes] = await Promise.all([
           fetch(`${BASE_API_URL}/api/positions`, { headers }),
-          fetch(`${BASE_API_URL}/api/companies`, { headers }),
           fetch(`${BASE_API_URL}/api/clients`, { headers }),
           fetch(`${BASE_API_URL}/api/sources`, { headers })
         ]);
@@ -74,11 +73,6 @@ const AddCandidatePage = () => {
         if (positionsRes.ok) {
           const positionsData = await positionsRes.json();
           setPositions(positionsData);
-        }
-
-        if (companiesRes.ok) {
-          const companiesData = await companiesRes.json();
-          setCompanies(companiesData);
         }
 
         if (clientsRes.ok) {
@@ -201,21 +195,25 @@ const AddCandidatePage = () => {
       setFormErrors(prev => ({ ...prev, [name]: '' }));
     }
 
-    // --- Auto-capitalize helper (Title Case) ---
-    const toTitleCase = (str) => str.replace(/\b\w/g, c => c.toUpperCase());
-
     let finalValue = value;
 
     if (name === 'email' && value) {
-      // Email: always lowercase, auto-fix common typos
       finalValue = value.toLowerCase()
         .replace(/@gnail\.con$/, '@gmail.com')
         .replace(/@gnail\.com$/, '@gmail.com')
         .replace(/@gmail\.con$/, '@gmail.com')
         .replace(/@gmal\.com$/, '@gmail.com');
-    } else if ((name === 'name' || name === 'spoc' || name === 'location') && value) {
-      // Auto-capitalize every word, trim leading spaces, collapse multiple spaces
-      finalValue = toTitleCase(value.replace(/^\s+/, '').replace(/\s{2,}/g, ' '));
+    } else if ((name === 'name' || name === 'spoc' || name === 'location' || name === 'companyName') && value) {
+      // Remove leading spaces, collapse multiple spaces to one, proper-case each word
+      // "DeVANshU saINI" → "Devanshu Saini"
+      let v = value.replace(/^\s+/, ''); // trim leading spaces only
+      v = v.replace(/\s{2,}/g, ' '); // collapse multiple spaces to single
+      // Proper-case: capitalize first letter, lowercase rest for each word
+      v = v.split(' ').map(word => {
+        if (!word) return '';
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }).join(' ');
+      finalValue = v;
     }
 
     // Collapse multiple consecutive spaces for all text fields (except email)
@@ -244,7 +242,7 @@ const AddCandidatePage = () => {
 
             setFormData(prev => ({
               ...prev,
-              name: result.name ? (result.name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')) : prev.name,
+              name: result.name ? formatByFieldName('name', result.name) : prev.name,
               email: result.email ? (result.email.toLowerCase().replace(/@gnail\.con$/, '@gmail.com').replace(/@gmail\.con$/, '@gmail.com')) : prev.email,
               contact: result.contact ? stripCountryCode(result.contact) : prev.contact
             }));
@@ -280,6 +278,19 @@ const AddCandidatePage = () => {
           setFormErrors(prev => ({ ...prev, email: 'Email is required' }));
         } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedValue)) {
           setFormErrors(prev => ({ ...prev, email: 'Please enter a valid email address' }));
+        } else {
+          const domain = trimmedValue.split('@')[1]?.toLowerCase();
+          const validDomains = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'yahoo.in', 'rediffmail.com', 'icloud.com', 'protonmail.com', 'zoho.com', 'aol.com', 'live.com', 'msn.com', 'ymail.com', 'mail.com', 'proton.me', 'tutanota.com', 'fastmail.com', 'hey.com', 'pm.me'];
+          if (!validDomains.includes(domain)) {
+            // For corporate emails: must have proper format (domain name >= 3 chars, valid TLD)
+            const domainParts = domain.split('.');
+            const tld = domainParts[domainParts.length - 1];
+            const domainName = domainParts[0];
+            const validTLDs = ['com', 'in', 'org', 'net', 'co', 'io', 'edu', 'gov', 'info', 'biz', 'us', 'uk', 'ca', 'au', 'de', 'fr', 'jp', 'cn', 'tech', 'ai', 'dev'];
+            if (domainParts.length < 2 || domainName.length < 3 || !validTLDs.includes(tld)) {
+              setFormErrors(prev => ({ ...prev, email: 'Please enter a valid email domain (e.g. gmail.com, outlook.com, company.com)' }));
+            }
+          }
         }
         break;
       case 'contact':
@@ -324,8 +335,8 @@ const AddCandidatePage = () => {
       }
     });
 
-    // Auto-capitalize name, spoc, location before saving
-    ['name', 'spoc', 'location'].forEach(field => {
+    // Auto-capitalize name, spoc, location, companyName before saving
+    ['name', 'spoc', 'location', 'companyName'].forEach(field => {
       if (trimmed[field]) {
         trimmed[field] = trimmed[field].split(/\s+/)
           .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
@@ -347,11 +358,23 @@ const AddCandidatePage = () => {
       errors.name = 'Name can only contain letters, spaces, and hyphens';
     }
 
-    // 2. Email: required, valid format
+    // 2. Email: required, valid format, valid domain
     if (!trimmed.email) {
       errors.email = 'Email is required';
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed.email)) {
       errors.email = 'Please enter a valid email address';
+    } else {
+      const domain = trimmed.email.split('@')[1]?.toLowerCase();
+      const validDomains = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'yahoo.in', 'rediffmail.com', 'icloud.com', 'protonmail.com', 'zoho.com', 'aol.com', 'live.com', 'msn.com', 'ymail.com', 'mail.com', 'proton.me', 'tutanota.com', 'fastmail.com', 'hey.com', 'pm.me'];
+      if (!validDomains.includes(domain)) {
+        const domainParts = domain.split('.');
+        const tld = domainParts[domainParts.length - 1];
+        const domainName = domainParts[0];
+        const validTLDs = ['com', 'in', 'org', 'net', 'co', 'io', 'edu', 'gov', 'info', 'biz', 'us', 'uk', 'ca', 'au', 'de', 'fr', 'jp', 'cn', 'tech', 'ai', 'dev'];
+        if (domainParts.length < 2 || domainName.length < 3 || !validTLDs.includes(tld)) {
+          errors.email = 'Please enter a valid email domain (e.g. gmail.com, outlook.com, company.com)';
+        }
+      }
     }
 
     // 3. Contact: required, 10-digit for India
@@ -521,14 +544,14 @@ const AddCandidatePage = () => {
                       value={formData.contact}
                       onChange={(e) => {
                         let digitsOnly = e.target.value.replace(/\D/g, '');
-                        if (digitsOnly.length > 15) digitsOnly = digitsOnly.slice(0, 15);
+                        if (digitsOnly.length > 10) digitsOnly = digitsOnly.slice(0, 10);
                         setFormData(prev => ({ ...prev, contact: digitsOnly }));
                         if (formErrors.contact) setFormErrors(prev => ({ ...prev, contact: '' }));
                       }}
                       onBlur={handleBlur}
                       placeholder="1234567890"
                       className="flex-1 px-3 py-2 text-sm outline-none"
-                      maxLength="15"
+                      maxLength="10"
                     />
                   </div>
                   {formErrors.contact && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.contact}</p>}
@@ -551,19 +574,16 @@ const AddCandidatePage = () => {
 
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1.5">Company <span className="text-red-500">*</span></label>
-                  <select
+                  <input
                     ref={fieldRefs.companyName}
+                    type="text"
                     name="companyName"
                     value={formData.companyName}
                     onChange={handleInputChange}
                     onBlur={handleBlur}
-                    className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 transition-all ${formErrors.companyName ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-200'}`}
-                  >
-                    <option value="">Select Company</option>
-                    {companies.map(company => (
-                      <option key={company._id} value={company.name}>{company.name}</option>
-                    ))}
-                  </select>
+                    placeholder="Company Name"
+                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 transition-all ${formErrors.companyName ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-200'}`}
+                  />
                   {formErrors.companyName && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.companyName}</p>}
                 </div>
 
@@ -759,17 +779,7 @@ const AddCandidatePage = () => {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1.5">Comment</label>
-                  <input
-                    type="text"
-                    name="srNo"
-                    value={formData.srNo}
-                    onChange={handleInputChange}
-                    placeholder="Optional comment"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
-                  />
-                </div>
+
               </div>
               <div className="grid grid-cols-1 gap-4 mt-4">
                 <div>

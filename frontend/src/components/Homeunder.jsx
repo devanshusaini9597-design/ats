@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
+import BASE_API_URL from '../config';
 
 const PeopleConnectHRHome = () => {
   const [showModal, setShowModal] = useState(false);
@@ -27,11 +28,11 @@ const PeopleConnectHRHome = () => {
   useEffect(() => {
     const fetchRealTimeData = async () => {
       try {
-        const taskRes = await fetch('https://skillnix-backend.onrender.com/api/daily-task');
+        const taskRes = await fetch(`${BASE_API_URL}/api/daily-task`);
         const taskData = await taskRes.json();
         setTask(taskData.task);
 
-        const updatesRes = await fetch('https://skillnix-backend.onrender.com/api/home-updates');
+        const updatesRes = await fetch(`${BASE_API_URL}/api/home-updates`);
         const updatesData = await updatesRes.json();
         setHomeData(updatesData);
 

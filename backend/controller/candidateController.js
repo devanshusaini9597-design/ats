@@ -758,6 +758,7 @@ const { detectFields, validateCandidate, autoFix } = require('../utils/globalVal
 const ExcelJS = require('exceljs');
 const DataValidator = require('../services/dataValidator');
 const LocationService = require('../services/locationService');
+const { normalizeText } = require('../utils/textNormalize');
 
 // exports.bulkUploadCandidates = async (req, res) => {
 //     if (!req.file) return res.status(400).json({ message: "No file uploaded." });
@@ -1547,7 +1548,7 @@ function autoDetectHeaderMapping(headerRow) {
 }
 
 exports.bulkUploadCandidates = async (req, res) => {
-    console.log("🚀 [BULK-UPLOAD] Starting validation and review process");
+    console.log("[BULK-UPLOAD] Starting validation and review process");
     if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded." });
 
     const filePath = req.file.path;
@@ -1555,25 +1556,24 @@ exports.bulkUploadCandidates = async (req, res) => {
     try {
         const {
             detectFields,
+            detectFieldsFromHeaders,
+            detectHeaderMapping,
+            isHeaderRow,
+            postDetectionSwap,
             validateCandidate,
             autoFix
         } = require('../utils/globalValidation');
 
-        console.log("📁 [BULK-UPLOAD] Reading Excel file:", req.file.originalname);
+        console.log("[BULK-UPLOAD] Reading file:", req.file.originalname);
 
         // Parse column mapping from frontend if provided
         let userMapping = null;
         if (req.body.columnMapping) {
-            console.log("--- 📋 Raw columnMapping received:", req.body.columnMapping);
             try {
                 userMapping = JSON.parse(req.body.columnMapping);
-                console.log("--- ✅ columnMapping parsed successfully:", JSON.stringify(userMapping, null, 2));
             } catch (parseErr) {
-                console.error("--- ❌ Failed to parse columnMapping:", parseErr.message);
                 userMapping = null;
             }
-        } else {
-            console.log("--- ⚠️ No columnMapping provided - will use auto-detection");
         }
 
         const workbook = new ExcelJS.Workbook();
@@ -1583,12 +1583,12 @@ exports.bulkUploadCandidates = async (req, res) => {
         } else {
             await workbook.xlsx.readFile(filePath);
         }
-        console.log("✅ Excel file read successfully");
 
         let totalRows = 0;
         let readyCount = 0;
         let reviewCount = 0;
         let blockedCount = 0;
+        let duplicateDbCount = 0;
         const results = [];
         const ready = [];
         const review = [];
@@ -1596,97 +1596,167 @@ exports.bulkUploadCandidates = async (req, res) => {
         const seenEmails = new Set();
         const seenPhones = new Set();
 
+        // DB-level duplicate check: Pre-fetch existing emails and phones for this user
+        const userId = req.user?.id;
+        let existingEmails = new Set();
+        let existingPhones = new Set();
+
+        if (userId) {
+            try {
+                const existingCandidates = await Candidate.find(
+                    { createdBy: userId },
+                    { email: 1, contact: 1, _id: 0 }
+                ).lean();
+                existingCandidates.forEach(c => {
+                    if (c.email) existingEmails.add(c.email.toLowerCase().trim());
+                    if (c.contact) existingPhones.add(String(c.contact).replace(/\D/g, ''));
+                });
+                console.log(`[BULK-UPLOAD] Pre-loaded ${existingEmails.size} existing emails, ${existingPhones.size} existing phones for duplicate check`);
+            } catch (dbErr) {
+                console.warn("[BULK-UPLOAD] Could not pre-load DB records for duplicate check:", dbErr.message);
+            }
+        }
+
+        // Set up streaming response for progress updates
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        const sendProgress = (data) => {
+            try { res.write(JSON.stringify(data) + '\n'); } catch (e) { /* ignore write errors */ }
+        };
+
+        // Count total data rows across all sheets first (for progress calculation)
+        let estimatedTotalRows = 0;
+        for (const ws of workbook.worksheets) {
+            estimatedTotalRows += Math.max(0, ws.rowCount - 1);
+        }
+        sendProgress({ type: 'progress', phase: 'reading', message: `Reading file... ${estimatedTotalRows} rows found`, totalEstimate: estimatedTotalRows, processed: 0 });
+
         // Process all sheets
         for (let sheetIndex = 0; sheetIndex < workbook.worksheets.length; sheetIndex++) {
             const worksheet = workbook.worksheets[sheetIndex];
             const sheetName = worksheet.name || `Sheet${sheetIndex + 1}`;
-            console.log(`📄 Processing sheet: ${sheetName}`);
 
             // Collect all rows
             const allRows = [];
             let headers = [];
             
             worksheet.eachRow((row, rowNumber) => {
-                const rowValues = row.values ? row.values.slice(1) : []; // ExcelJS starts at index 1
-                allRows.push(rowValues.map(v => v ? String(v).trim() : ''));
+                const rowValues = row.values ? row.values.slice(1) : [];
+                allRows.push(rowValues.map(v => {
+                    if (v === null || v === undefined) return '';
+                    if (typeof v === 'object') {
+                        if (v.text) return String(v.text).trim();
+                        if (v.result) return String(v.result).trim();
+                        if (v.richText) return v.richText.map(rt => rt.text || '').join('').trim();
+                        if (v instanceof Date) return v.toISOString().split('T')[0];
+                    }
+                    return String(v).trim();
+                }));
             });
 
-            if (allRows.length < 2) {
-                console.log(`⚠️  Sheet '${sheetName}' has no data, skipping`);
-                continue;
-            }
+            if (allRows.length < 2) continue;
 
-            // Use first row as headers
             headers = allRows[0];
-            console.log(`🏷️  Headers: ${headers.join(', ')}`);
+            sendProgress({ type: 'progress', phase: 'processing', message: `Processing sheet "${sheetName}" (${allRows.length - 1} rows)...`, totalEstimate: estimatedTotalRows, processed: totalRows });
 
-            // Generate headerMap from user mapping if provided
-            let headerMap = null;
+            // SMART HEADER MAPPING: detect which columns map to which fields
+            let smartHeaderMap = null;
             if (userMapping && Object.keys(userMapping).length > 0) {
-                console.log("--- ✅ Using USER MAPPING:", JSON.stringify(userMapping));
-                headerMap = {};
+                // Use user-provided mapping
+                smartHeaderMap = {};
                 Object.entries(userMapping).forEach(([excelColumnIndex, fieldName]) => {
-                    if (!fieldName || fieldName === '') return; // Skip unmapped columns
+                    if (!fieldName || fieldName === '') return;
                     const colIdx = parseInt(excelColumnIndex, 10);
                     if (colIdx >= 0 && colIdx < headers.length) {
-                        headerMap[fieldName] = headers[colIdx];
-                        console.log(`   📍 Mapped Excel Column ${colIdx} → "${fieldName}" (from header: "${headers[colIdx]}")`);
+                        smartHeaderMap[fieldName] = colIdx;
                     }
                 });
-                console.log("--- 🗺️ Final headerMap from user mapping:", JSON.stringify(headerMap, null, 2));
+            } else {
+                // Auto-detect header mapping
+                smartHeaderMap = detectHeaderMapping(headers);
             }
 
-            // Process data rows (starting from row 2)
+            const useSmartHeaders = Object.keys(smartHeaderMap).length >= 2;
+            console.log(`[BULK-UPLOAD] Sheet "${sheetName}": ${useSmartHeaders ? 'HEADER-BASED' : 'CONTENT-BASED'} mapping (${Object.keys(smartHeaderMap).length} fields detected)`);
+            if (useSmartHeaders) {
+                console.log(`[BULK-UPLOAD] Mapped fields:`, Object.entries(smartHeaderMap).map(([f, i]) => `${f}→col${i}("${headers[i]}")`).join(', '));
+            }
+
+            // Process data rows
             for (let rowIdx = 1; rowIdx < allRows.length; rowIdx++) {
                 const rowData = allRows[rowIdx];
+                
+                // Skip completely empty rows
+                const hasData = rowData.some(cell => cell && String(cell).trim() !== '');
+                if (!hasData) continue;
+
+                // Skip repeated header rows in the middle of data
+                if (isHeaderRow(rowData, headers)) continue;
+
                 totalRows++;
 
+                // Send progress update every 500 rows
+                if (totalRows % 500 === 0) {
+                    sendProgress({ type: 'progress', phase: 'validating', message: `Validating row ${totalRows} of ~${estimatedTotalRows}...`, totalEstimate: estimatedTotalRows, processed: totalRows, ready: readyCount, review: reviewCount, blocked: blockedCount });
+                }
+
                 try {
-                    // Build row object from data
-                    let row = {};
-                    
-                    if (headerMap) {
-                        // Use user-provided mapping
-                        console.log(`   🔍 Row ${totalRows}: Using user mapping to extract fields`);
-                        Object.entries(headerMap).forEach(([fieldName, headerValue]) => {
-                            const colIdx = headers.indexOf(headerValue);
-                            if (colIdx >= 0) {
-                                row[fieldName] = rowData[colIdx] || '';
-                            }
-                        });
+                    let detected;
+                    let originalRow = {};
+
+                    // Build original row for display
+                    headers.forEach((header, colIdx) => {
+                        if (header) originalRow[header] = rowData[colIdx] || '';
+                    });
+
+                    if (useSmartHeaders) {
+                        // HEADER-BASED: Direct column mapping (most accurate)
+                        detected = detectFieldsFromHeaders(rowData, smartHeaderMap, headers);
                     } else {
-                        // Use original header-based mapping
+                        // FALLBACK: Content-based detection
+                        let row = {};
                         headers.forEach((header, colIdx) => {
-                            if (header) {
-                                row[header] = rowData[colIdx] || '';
-                            }
+                            if (header) row[header] = rowData[colIdx] || '';
                         });
+                        detected = detectFields(row, headers);
+                        postDetectionSwap(detected);
                     }
 
-                    // Apply validation from globalValidation
-                    const detected = detectFields(row, headers);
                     const { fixed, changes } = autoFix(detected);
                     const validation = validateCandidate(fixed, totalRows);
 
-                    // Skip if duplicate within this import
-                    if (fixed.email && seenEmails.has(fixed.email.toLowerCase())) {
-                        console.log(`⏭️  Row ${totalRows}: Duplicate email, skipping`);
-                        continue;
-                    }
-                    if (fixed.phone && seenPhones.has(fixed.phone)) {
-                        console.log(`⏭️  Row ${totalRows}: Duplicate phone, skipping`);
-                        continue;
-                    }
+                    // Skip if duplicate within this import batch
+                    if (fixed.email && seenEmails.has(fixed.email.toLowerCase())) continue;
+                    if (fixed.phone && seenPhones.has(fixed.phone)) continue;
 
                     // Track seen values
                     if (fixed.email) seenEmails.add(fixed.email.toLowerCase());
                     if (fixed.phone) seenPhones.add(fixed.phone);
 
+                    // DB-level duplicate check
+                    const isDbDuplicateEmail = fixed.email && existingEmails.has(fixed.email.toLowerCase());
+                    const isDbDuplicatePhone = fixed.phone && existingPhones.has(String(fixed.phone).replace(/\D/g, ''));
+                    const isDbDuplicate = isDbDuplicateEmail || isDbDuplicatePhone;
+
+                    if (isDbDuplicate) {
+                        duplicateDbCount++;
+                        const dupWarning = isDbDuplicateEmail
+                            ? { field: 'email', message: `Email "${fixed.email}" already exists in your database (will update on import)`, severity: 'INFO' }
+                            : { field: 'phone', message: `Phone "${fixed.phone}" already exists in your database (will update on import)`, severity: 'INFO' };
+                        validation.warnings = validation.warnings || [];
+                        validation.warnings.push(dupWarning);
+                    }
+
                     const result = {
                         rowIndex: totalRows,
-                        original: row,
+                        original: originalRow,
                         fixed,
                         autoFixChanges: changes,
+                        swaps: detected._swaps || [],
+                        isDbDuplicate,
                         validation: {
                             category: validation.category,
                             confidence: validation.confidence,
@@ -1699,6 +1769,44 @@ exports.bulkUploadCandidates = async (req, res) => {
                     if (result.fixed.phone) {
                         result.fixed.contact = result.fixed.phone;
                         delete result.fixed.phone;
+                    }
+
+                    // Map company → companyName for consistency
+                    if (result.fixed.company && !result.fixed.companyName) {
+                        result.fixed.companyName = result.fixed.company;
+                        delete result.fixed.company;
+                    }
+
+                    // Map sourceOfCV → source for consistency
+                    if (result.fixed.sourceOfCV && !result.fixed.source) {
+                        result.fixed.source = result.fixed.sourceOfCV;
+                        delete result.fixed.sourceOfCV;
+                    }
+
+                    // Map expectedSalary → expectedCtc for consistency
+                    if (result.fixed.expectedSalary !== null && result.fixed.expectedSalary !== undefined && !result.fixed.expectedCtc) {
+                        result.fixed.expectedCtc = result.fixed.expectedSalary;
+                        delete result.fixed.expectedSalary;
+                    }
+
+                    // Normalize status to Title Case
+                    if (result.fixed.status) {
+                        const statusMap = {
+                            'applied': 'Applied', 'interested': 'Interested', 'scheduled': 'Interested and scheduled',
+                            'interviewed': 'Interview', 'rejected': 'Rejected', 'joined': 'Joined',
+                            'pending': 'Applied', 'active': 'Applied', 'on hold': 'Hold',
+                            'not interested': 'Rejected', 'hold': 'Hold', 'selected': 'Offer',
+                            'offered': 'Offer', 'accepted': 'Offer', 'declined': 'Rejected',
+                            'screening': 'Screening', 'hired': 'Hired', 'offer': 'Offer',
+                            'interview': 'Interview', 'dropped': 'Dropped'
+                        };
+                        const normalized = statusMap[result.fixed.status.toLowerCase().trim()];
+                        if (normalized) result.fixed.status = normalized;
+                    }
+
+                    // Set default date if not provided
+                    if (!result.fixed.date) {
+                        result.fixed.date = new Date().toISOString().split('T')[0];
                     }
 
                     results.push(result);
@@ -1715,43 +1823,47 @@ exports.bulkUploadCandidates = async (req, res) => {
                         blocked.push(result);
                     }
                 } catch (rowErr) {
-                    console.error(`❌ Error processing row ${totalRows}:`, rowErr.message);
-                    // Skip this row and continue
+                    console.error(`[BULK-UPLOAD] Error processing row ${totalRows}:`, rowErr.message);
                     continue;
                 }
             }
         }
 
-        console.log(`📊 Total rows processed: ${totalRows}`);
-        console.log(`✅ Ready: ${readyCount}, Review: ${reviewCount}, Blocked: ${blockedCount}`);
+        console.log(`[BULK-UPLOAD] Total: ${totalRows}, Ready: ${readyCount}, Review: ${reviewCount}, Blocked: ${blockedCount}, DB Duplicates: ${duplicateDbCount}`);
 
-        // Return results for user review (NO auto-import)
-        res.json({
+        sendProgress({ type: 'progress', phase: 'finalizing', message: 'Preparing results...', totalEstimate: estimatedTotalRows, processed: totalRows });
+
+        const finalResult = {
+            type: 'complete',
             success: true,
             fileName: req.file.originalname,
             totalProcessed: totalRows,
             stats: {
                 ready: readyCount,
                 review: reviewCount,
-                blocked: blockedCount
+                blocked: blockedCount,
+                dbDuplicates: duplicateDbCount
             },
-            results: {
-                ready,
-                review,
-                blocked
-            },
-            message: `Processed ${totalRows} rows: ${readyCount} ready, ${reviewCount} need review, ${blockedCount} blocked`
-        });
+            results: { ready, review, blocked },
+            message: `Processed ${totalRows} rows: ${readyCount} ready, ${reviewCount} need review, ${blockedCount} blocked${duplicateDbCount > 0 ? `, ${duplicateDbCount} existing in DB` : ''}`
+        };
 
-        console.log('✅ [BULK-UPLOAD] Complete and results sent');
+        res.write(JSON.stringify(finalResult) + '\n');
+        res.end();
 
     } catch (err) {
-        console.error("❌ [BULK-UPLOAD] ERROR:", err.message, err.stack);
-        res.status(500).json({ success: false, message: err.message });
+        console.error("[BULK-UPLOAD] ERROR:", err.message, err.stack);
+        try {
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, message: err.message });
+            } else {
+                res.write(JSON.stringify({ type: 'error', success: false, message: err.message }) + '\n');
+                res.end();
+            }
+        } catch (e) { res.end(); }
     } finally {
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
-            console.log('🗑️  Temp file deleted');
         }
     }
 };
@@ -1974,6 +2086,10 @@ exports.createCandidate = async (req, res) => {
             req.body.state = LocationService.detectState(req.body.location);
         }
 
+        // ✅ Normalize text fields (Title Case + single spaces)
+        const textFields = ['name', 'position', 'companyName', 'location', 'client', 'spoc', 'source', 'noticePeriod', 'fls', 'remark'];
+        textFields.forEach(f => { if (req.body[f] && typeof req.body[f] === 'string') req.body[f] = normalizeText(req.body[f]); });
+
         // ✅ Stamp ownership: candidate belongs to the logged-in user
         req.body.createdBy = req.user.id;
 
@@ -2000,6 +2116,10 @@ exports.updateCandidate = async (req, res) => {
             req.body.state = LocationService.detectState(req.body.location);
         }
 
+        // ✅ Normalize text fields (Title Case + single spaces)
+        const textFields = ['name', 'position', 'companyName', 'location', 'client', 'spoc', 'source', 'noticePeriod', 'fls', 'remark'];
+        textFields.forEach(f => { if (req.body[f] && typeof req.body[f] === 'string') req.body[f] = normalizeText(req.body[f]); });
+
         // Only update if candidate belongs to the logged-in user
         const updatedCandidate = await Candidate.findOneAndUpdate(
             { _id: id, createdBy: req.user.id },
@@ -2010,5 +2130,143 @@ exports.updateCandidate = async (req, res) => {
         res.status(200).json({ success: true, message: "Updated Successfully", data: updatedCandidate });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// ✅ Share candidate with team members (request-based workflow with notifications + email)
+exports.shareCandidate = async (req, res) => {
+    try {
+        const { candidateIds, sharedWith } = req.body;
+        const userId = req.user.id;
+
+        const ids = Array.isArray(candidateIds) ? candidateIds : [candidateIds];
+        if (!ids.length || !Array.isArray(sharedWith) || sharedWith.length === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "candidateIds (array) and sharedWith array (with at least one member) are required" 
+            });
+        }
+
+        const User = require('mongoose').model('User');
+        const Notification = require('../models/Notification');
+        
+        // Verify all candidates belong to the logged-in user
+        const candidates = await Candidate.find({ _id: { $in: ids }, createdBy: userId });
+        if (candidates.length !== ids.length) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "One or more candidates not found or access denied" 
+            });
+        }
+
+        const TeamMember = require('../models/TeamMember');
+        const teamMembers = await TeamMember.find({ 
+            _id: { $in: sharedWith },
+            createdBy: userId
+        });
+        if (teamMembers.length !== sharedWith.length) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "One or more team members do not exist or are not in your team" 
+            });
+        }
+
+        // Add sharing entries
+        const shareEntries = sharedWith.map(memberId => ({
+            userId: memberId,
+            sharedAt: new Date(),
+            sharedBy: userId
+        }));
+
+        const result = await Candidate.updateMany(
+            { _id: { $in: ids } },
+            { $addToSet: { sharedWith: { $each: shareEntries } } }
+        );
+
+        // Get the sharer's info
+        const sharerUser = await User.findById(userId).select('name email');
+        const sharerName = sharerUser?.name || sharerUser?.email || 'A team member';
+        const candidateNames = candidates.map(c => c.name).slice(0, 5).join(', ');
+        const candidateLabel = ids.length === 1 ? candidates[0].name : `${ids.length} candidates`;
+
+        // Create notifications and send emails to each team member
+        for (const member of teamMembers) {
+            // Find if this team member has a user account
+            const memberUser = await User.findOne({ email: member.email.toLowerCase() });
+            
+            // Create in-app notification if they have an account
+            if (memberUser) {
+                try {
+                    const notification = new Notification({
+                        userId: memberUser._id,
+                        senderId: userId,
+                        senderName: sharerName,
+                        type: 'share_request',
+                        title: 'Candidates Shared With You',
+                        message: `${sharerName} shared ${candidateLabel} with you.${ids.length <= 5 ? ` (${candidateNames})` : ''}`,
+                        priority: 'medium',
+                        actionRequired: false,
+                        status: 'pending'
+                    });
+                    await notification.save();
+                } catch (notifErr) {
+                    console.error('Failed to create share notification:', notifErr.message);
+                }
+            }
+
+            // Send email notification
+            try {
+                const { sendEmail } = require('../services/emailService');
+                const appUrl = process.env.FRONTEND_URL || 'https://skillnix.vercel.app';
+                const candidateRows = candidates.slice(0, 10).map(c => 
+                    `<tr><td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-size:14px;color:#374151;">${c.name}</td><td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-size:14px;color:#6b7280;">${c.position || '-'}</td><td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-size:14px;color:#6b7280;">${c.email || '-'}</td></tr>`
+                ).join('');
+                
+                const htmlBody = `
+                  <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 36px; color: white; text-align: center; border-radius: 12px 12px 0 0;">
+                      <h2 style="margin: 0; font-size: 20px;">Candidates Shared With You</h2>
+                    </div>
+                    <div style="padding: 32px; background: white; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+                      <p style="color: #374151; font-size: 16px; margin: 0 0 12px;">Hello <strong>${member.name}</strong>,</p>
+                      <p style="color: #6b7280; line-height: 1.7; margin: 0 0 20px;">
+                        <strong>${sharerName}</strong> has shared <strong>${candidateLabel}</strong> with you on SkillNix.
+                      </p>
+                      <table style="width:100%;border-collapse:collapse;margin:0 0 20px;background:#f9fafb;border-radius:8px;overflow:hidden;">
+                        <thead><tr style="background:#f3f4f6;"><th style="padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;color:#6b7280;font-weight:600;">Name</th><th style="padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;color:#6b7280;font-weight:600;">Position</th><th style="padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;color:#6b7280;font-weight:600;">Email</th></tr></thead>
+                        <tbody>${candidateRows}</tbody>
+                      </table>
+                      ${ids.length > 10 ? `<p style="color:#9ca3af;font-size:13px;margin:0 0 16px;">...and ${ids.length - 10} more candidates</p>` : ''}
+                      <div style="text-align: center; margin: 24px 0;">
+                        <a href="${appUrl}/ats" style="display: inline-block; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); color: white; text-decoration: none; padding: 12px 32px; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                          View Candidates
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                const textBody = `Hello ${member.name}, ${sharerName} has shared ${candidateLabel} with you on SkillNix. Log in to view.`;
+                
+                await sendEmail(member.email, `${sharerName} shared ${candidateLabel} with you - SkillNix`, htmlBody, textBody, { userId });
+            } catch (emailErr) {
+                console.error(`Failed to send share email to ${member.email}:`, emailErr.message);
+            }
+        }
+
+        res.status(200).json({ 
+            success: true, 
+            message: `${ids.length} candidate(s) shared with ${sharedWith.length} team member(s)`,
+            sharedCandidateCount: ids.length,
+            sharedMemberCount: sharedWith.length,
+            modifiedCount: result.modifiedCount
+        });
+
+    } catch (error) {
+        console.error('Error sharing candidate:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error sharing candidate", 
+            error: error.message 
+        });
     }
 };

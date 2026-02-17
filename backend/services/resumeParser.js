@@ -58,6 +58,62 @@ async function extractTextWithPdfJs(buffer) {
   }
 }
 
+// ─── PDF to Image rendering via @napi-rs/canvas + pdfjs-dist ───
+let napiCanvas;
+try {
+  napiCanvas = require('@napi-rs/canvas');
+  console.log('✅ @napi-rs/canvas loaded for PDF page rendering');
+} catch (e) {
+  napiCanvas = null;
+  console.warn('⚠️ @napi-rs/canvas not available:', e.message);
+}
+
+// Custom CanvasFactory for pdfjs-dist rendering with @napi-rs/canvas
+class NodeCanvasFactory {
+  create(width, height) {
+    const canvas = napiCanvas.createCanvas(width, height);
+    const context = canvas.getContext('2d');
+    return { canvas, context };
+  }
+  reset(canvasAndContext, width, height) {
+    canvasAndContext.canvas.width = width;
+    canvasAndContext.canvas.height = height;
+  }
+  destroy(canvasAndContext) {
+    canvasAndContext.canvas = null;
+    canvasAndContext.context = null;
+  }
+}
+
+async function renderPdfPageToImage(pdfDoc, pageNum) {
+  if (!napiCanvas) return null;
+  try {
+    const page = await pdfDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 2.0 }); // 2x for quality OCR
+    const canvas = napiCanvas.createCanvas(viewport.width, viewport.height);
+    const ctx = canvas.getContext('2d');
+
+    // Fill white background (scanned PDFs may have transparent bg)
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, viewport.width, viewport.height);
+
+    // pdfjs-dist render needs a canvas-compatible context + canvasFactory
+    await page.render({
+      canvasContext: ctx,
+      viewport: viewport,
+      canvasFactory: napiCanvas ? new NodeCanvasFactory() : undefined
+    }).promise;
+
+    // Export as PNG buffer
+    const pngBuffer = canvas.toBuffer('image/png');
+    console.log(`   📸 Page ${pageNum} rendered: ${pngBuffer.length} bytes PNG (${Math.round(viewport.width)}x${Math.round(viewport.height)})`);
+    return pngBuffer;
+  } catch (err) {
+    console.warn(`⚠️ Failed to render PDF page ${pageNum}:`, err.message);
+    return null;
+  }
+}
+
 // ─── Enterprise OCR Pipeline via tesseract.js ───
 async function ocrPdfBuffer(buffer) {
   if (!Tesseract) {
@@ -65,25 +121,60 @@ async function ocrPdfBuffer(buffer) {
     return '';
   }
   try {
-    // Write buffer to temp file for tesseract processing
-    const tmpDir = os.tmpdir();
-    const tmpFile = path.join(tmpDir, `resume_ocr_${Date.now()}.pdf`);
-    fs.writeFileSync(tmpFile, buffer);
+    const header = buffer.slice(0, 5).toString('ascii');
 
-    console.log('🔍 Starting OCR on PDF (this may take 15-30 seconds)...');
+    // For PDF files: render pages to images first, then OCR each image
+    if (header.startsWith('%PDF')) {
+      if (!pdfjsLib || !napiCanvas) {
+        console.warn('⚠️ Cannot OCR scanned PDF: requires pdfjs-dist + @napi-rs/canvas');
+        return '';
+      }
+
+      console.log('🔍 Rendering PDF pages to images for OCR...');
+      const uint8 = new Uint8Array(buffer);
+      const pdfDoc = await pdfjsLib.getDocument({
+        data: uint8,
+        canvasFactory: napiCanvas ? new NodeCanvasFactory() : undefined
+      }).promise;
+      const numPages = Math.min(pdfDoc.numPages, 5); // Limit to first 5 pages
+      let allText = '';
+
+      const worker = await Tesseract.createWorker('eng', 1, {
+        errorHandler: (err) => {
+          console.warn('⚠️ Tesseract worker error (handled):', err.message);
+        }
+      });
+
+      for (let i = 1; i <= numPages; i++) {
+        console.log(`📄 Processing page ${i}/${numPages}...`);
+        const imgBuffer = await renderPdfPageToImage(pdfDoc, i);
+        if (imgBuffer) {
+          const { data } = await worker.recognize(imgBuffer);
+          allText += (data.text || '') + '\n';
+          console.log(`   → Page ${i}: ${data.text.length} chars`);
+        }
+      }
+
+      await worker.terminate();
+      console.log(`✅ OCR complete: extracted ${allText.length} characters from ${numPages} pages`);
+      return allText.trim();
+    }
+
+    // For image buffers, run OCR directly
+    console.log('🔍 Starting OCR on image buffer...');
     const worker = await Tesseract.createWorker('eng', 1, {
       logger: m => {
         if (m.status === 'recognizing text') {
           process.stdout.write(`\r🔍 OCR Progress: ${Math.round(m.progress * 100)}%`);
         }
+      },
+      errorHandler: (err) => {
+        console.warn('⚠️ Tesseract worker error (handled):', err.message);
       }
     });
 
-    const { data } = await worker.recognize(tmpFile);
+    const { data } = await worker.recognize(buffer);
     await worker.terminate();
-
-    // Cleanup temp file
-    try { fs.unlinkSync(tmpFile); } catch (_) {}
 
     console.log(`\n✅ OCR complete: extracted ${data.text.length} characters`);
     return data.text || '';
@@ -127,6 +218,23 @@ const JOB_TITLES = [
   'business analyst', 'system analyst', 'requirements analyst', 'functional analyst',
   'consultant', 'senior consultant', 'solution architect', 'enterprise architect',
 
+  // Banking & Finance Roles
+  'branch manager', 'assistant branch manager', 'relationship manager', 'credit analyst',
+  'loan officer', 'investment banker', 'financial analyst', 'risk analyst', 'compliance officer',
+  'assistant vice president', 'vice president', 'branch head', 'branch operations manager',
+  'operations manager', 'area manager', 'regional manager', 'cluster manager',
+  'portfolio manager', 'wealth manager', 'insurance advisor', 'underwriter',
+  'audit manager', 'accounts manager', 'finance manager', 'treasury manager',
+
+  // HR & Admin Roles
+  'hr manager', 'hr executive', 'recruiter', 'talent acquisition', 'hr coordinator',
+  'admin executive', 'office manager', 'executive assistant', 'receptionist',
+
+  // Sales & Marketing Roles
+  'sales manager', 'sales executive', 'marketing manager', 'marketing executive',
+  'business development manager', 'business development executive', 'account manager',
+  'key account manager', 'territory manager',
+
   // Support Roles
   'technical support', 'customer support', 'help desk', 'system support', 'application support'
 ];
@@ -134,7 +242,10 @@ const JOB_TITLES = [
 const COMPANY_KEYWORDS = [
   'ltd', 'limited', 'inc', 'incorporated', 'corp', 'corporation', 'llc', 'llp',
   'pvt', 'private', 'technologies', 'solutions', 'systems', 'software', 'services',
-  'consulting', 'labs', 'studios', 'group', 'holdings', 'enterprises', 'ventures'
+  'consulting', 'labs', 'studios', 'group', 'holdings', 'enterprises', 'ventures',
+  'bank', 'finance', 'capital', 'insurance', 'associates', 'partners', 'agency',
+  'industries', 'international', 'global', 'infosys', 'wipro', 'tcs', 'hcl',
+  'infotech', 'techno', 'infocom', 'infra', 'foundation', 'trust', 'company'
 ];
 
 const LOCATION_KEYWORDS = {
@@ -190,7 +301,16 @@ const SKILL_KEYWORDS = [
 
   // Tools & Frameworks
   'git', 'svn', 'jira', 'confluence', 'slack', 'postman', 'swagger', 'figma', 'sketch',
-  'adobe xd', 'photoshop', 'illustrator', 'premiere', 'after effects'
+  'adobe xd', 'photoshop', 'illustrator', 'premiere', 'after effects',
+
+  // Banking & Finance Skills
+  'risk management', 'credit analysis', 'loan processing', 'compliance', 'aml',
+  'kyc', 'financial analysis', 'portfolio management', 'wealth management',
+  'banking operations', 'treasury', 'forex', 'mutual funds', 'insurance',
+  'underwriting', 'audit', 'accounting', 'tally', 'sap', 'erp',
+  'ms excel', 'excel', 'powerpoint', 'word', 'ms office',
+  'communication', 'leadership', 'team management', 'customer service',
+  'negotiation', 'presentation', 'problem solving', 'analytical skills'
 ];
 
 // Advanced regex patterns with confidence scoring
@@ -263,8 +383,39 @@ function smartSegment(text) {
   return sections;
 }
 
+// ─── OCR Text Cleanup ───
+// OCR often produces concatenated words like "SUBODHJHA" or "DateOfBirth".
+// This function tries to add spaces at camelCase/PascalCase boundaries.
+function cleanOcrText(text) {
+  let cleaned = text;
+  // Split camelCase/PascalCase: "DateOfBirth" → "Date Of Birth"
+  cleaned = cleaned.replace(/([a-z])([A-Z])/g, '$1 $2');
+  // Split when lowercase is followed by uppercase run: "fromBASTAR" → "from BASTAR"
+  cleaned = cleaned.replace(/([a-z])([A-Z]{2,})/g, '$1 $2');
+  // Split when uppercase run is followed by uppercase+lowercase: "SUBODHJha" → "SUBODH Jha"
+  cleaned = cleaned.replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2');
+  // Split concatenated all-caps words using known keywords as boundary hints
+  const KNOWN_WORDS = ['UNIVERSITY', 'COLLEGE', 'INSTITUTE', 'SCHOOL', 'EDUCATION', 'EXPERIENCE',
+    'SKILLS', 'CONTACT', 'SUMMARY', 'OBJECTIVE', 'CERTIFICATION', 'ACHIEVEMENT',
+    'DEPARTMENT', 'MANAGEMENT', 'DEVELOPMENT', 'ENGINEERING', 'TECHNOLOGY',
+    'BACHELOR', 'MASTER', 'DIPLOMA', 'DEGREE', 'COMMERCE', 'SCIENCE', 'ARTS'];
+  for (const word of KNOWN_WORDS) {
+    // Add space before known word if preceded by other letters without space
+    const regex = new RegExp(`([A-Za-z])${word}`, 'g');
+    cleaned = cleaned.replace(regex, `$1 ${word}`);
+    // Add space after known word if followed by other letters  
+    const regex2 = new RegExp(`${word}([A-Za-z])`, 'g');
+    cleaned = cleaned.replace(regex2, `${word} $1`);
+  }
+  // Fix common OCR artifacts: multiple spaces, stray punctuation
+  cleaned = cleaned.replace(/\s{3,}/g, '  ');
+  return cleaned;
+}
+
 // ─── Enterprise-Grade Field Extraction ───
 function extractFields(text) {
+  // Apply OCR text cleanup before processing
+  text = cleanOcrText(text);
   const rawText = text;
   const cleanText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
@@ -363,19 +514,41 @@ function extractFields(text) {
     'contact', 'certification', 'resume', 'curriculum', 'vitae', 'declaration'
   ]);
 
-  // Strategy A1: Grab consecutive capitalized words from start, stop at title/section words
+  // Non-name words — words that are never part of a person's name
+  const NON_NAME_WORDS = new Set([
+    'date', 'birth', 'dateofbirth', 'dob', 'gender', 'male', 'female', 'nationality',
+    'address', 'phone', 'email', 'mobile', 'tel', 'fax', 'website', 'linkedin',
+    'github', 'portfolio', 'objective', 'summary', 'career', 'page', 'resume', 'cv',
+    'age', 'marital', 'status', 'father', 'mother', 'passport', 'visa', 'religion',
+    'present', 'permanent', 'current', 'pincode', 'zip', 'country', 'state', 'city',
+    'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+    'september', 'october', 'november', 'december', 'jan', 'feb', 'mar', 'apr',
+    'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
+  ]);
+
+  // Helper: Check if a word could be part of a person's name
+  function isNameWord(w) {
+    const lower = w.toLowerCase();
+    if (TITLE_STOP_WORDS.has(lower)) return false;
+    if (NON_NAME_WORDS.has(lower)) return false;
+    if (/\d/.test(w)) return false; // Names don't contain digits
+    if (w.length < 2) return false; // Too short
+    if (w.length > 15) return false; // Too long for a name part
+    return true;
+  }
+
+  // Strategy A1: Grab consecutive capitalized words from start, stop at title/section/non-name words
   const startWords = flatText.match(/^([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+)*)/);
   if (startWords) {
     const allWords = startWords[1].split(/\s+/);
     const nameWords = [];
     for (const w of allWords) {
-      if (TITLE_STOP_WORDS.has(w.toLowerCase())) break;
+      if (!isNameWord(w)) break;
       nameWords.push(w);
     }
     if (nameWords.length >= 2 && nameWords.length <= 4) {
       const candidate = nameWords.join(' ');
       if (candidate.length >= 3 && candidate.length <= 45) {
-        // Title-case if all caps
         const titleCased = /^[A-Z\s.'-]+$/.test(candidate)
           ? candidate.split(/\s+/).map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(' ')
           : candidate;
@@ -391,12 +564,40 @@ function extractFields(text) {
       const allWords = allCaps[1].split(/\s+/);
       const nameWords = [];
       for (const w of allWords) {
-        if (TITLE_STOP_WORDS.has(w.toLowerCase())) break;
+        if (!isNameWord(w)) break;
         nameWords.push(w);
       }
       if (nameWords.length >= 2 && nameWords.length <= 4) {
         const titleCased = nameWords.map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
         result.name = { value: titleCased, confidence: 95 };
+      }
+    }
+  }
+
+  // Strategy A2b: Single all-caps name at start — only if email confirms it
+  if (result.name.confidence < 90 && emailLocal) {
+    const allCaps = flatText.match(/^([A-Z]{2,})/);
+    if (allCaps) {
+      const word = allCaps[1];
+      if (isNameWord(word) && word.length >= 3) {
+        // Try to split concatenated name using email hint: "SUBODHJHA" + email "subodh36garh@"
+        const emailName = emailLocal.replace(/[0-9_]+/g, '').toLowerCase();
+        // Check if the start of the caps matches the email prefix
+        const lowerWord = word.toLowerCase();
+        // Try finding a split point where the start matches the email name prefix
+        let bestSplit = null;
+        for (let splitPos = 2; splitPos < lowerWord.length - 1; splitPos++) {
+          const firstPart = lowerWord.substring(0, splitPos);
+          if (emailName.startsWith(firstPart) && firstPart.length >= 3) {
+            bestSplit = splitPos;
+          }
+        }
+        if (bestSplit) {
+          const first = word.substring(0, bestSplit);
+          const last = word.substring(bestSplit);
+          const titleCased = [first, last].map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+          result.name = { value: titleCased, confidence: 85 };
+        }
       }
     }
   }
@@ -407,12 +608,16 @@ function extractFields(text) {
       const line = rawLines[i].trim();
       // Name: 2-4 words, each starting with uppercase, no numbers, no special chars except hyphen
       if (/^[A-Z][a-zA-Z'-]+(\s+[A-Z][a-zA-Z'-]+){1,3}$/.test(line) && line.length <= 40) {
-        const lowerLine = line.toLowerCase();
-        const isSection = ['about me', 'summary', 'education', 'skills', 'experience', 'contact'].includes(lowerLine);
-        const isJobTitle = JOB_TITLES.some(t => lowerLine === t);
-        if (!isSection && !isJobTitle) {
-          result.name = { value: line, confidence: 90 };
-          break;
+        const words = line.split(/\s+/);
+        const validWords = words.filter(w => isNameWord(w));
+        if (validWords.length >= 2 && validWords.length === words.length) {
+          const lowerLine = line.toLowerCase();
+          const isSection = ['about me', 'summary', 'education', 'skills', 'experience', 'contact'].includes(lowerLine);
+          const isJobTitle = JOB_TITLES.some(t => lowerLine === t);
+          if (!isSection && !isJobTitle) {
+            result.name = { value: line, confidence: 90 };
+            break;
+          }
         }
       }
     }
@@ -420,12 +625,29 @@ function extractFields(text) {
 
   // Strategy A4: Infer from email if we still don't have a name
   if (result.name.confidence < 70 && emailLocal) {
-    // Try to extract name from email like "john.doe" or "johndoe123"
     const cleanLocal = emailLocal.replace(/[0-9_]+/g, '').replace(/[.]/g, ' ').trim();
     if (cleanLocal.length >= 3) {
       const nameParts = cleanLocal.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
       if (nameParts.length >= 1 && nameParts.join(' ').length >= 3) {
         result.name = { value: nameParts.join(' '), confidence: 60 };
+      }
+    }
+  }
+
+  // Strategy A5: Cross-validate name with email — if name doesn't match email at all, try email-based name
+  if (result.name.confidence > 0 && emailLocal) {
+    const emailName = emailLocal.replace(/[0-9_@.]+/g, '').toLowerCase();
+    const extractedNameLower = result.name.value.replace(/\s+/g, '').toLowerCase();
+    // If extracted name doesn't overlap with email at all, email-based name might be better
+    const emailInName = emailName.length >= 3 && (extractedNameLower.includes(emailName.substring(0, 3)) || emailName.includes(extractedNameLower.substring(0, 3)));
+    if (!emailInName && result.name.confidence <= 85) {
+      // Try email-based name instead
+      const cleanLocal = emailLocal.replace(/[0-9_]+/g, '').replace(/[.]/g, ' ').trim();
+      if (cleanLocal.length >= 3) {
+        const nameParts = cleanLocal.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+        if (nameParts.length >= 1) {
+          result.name = { value: nameParts.join(' '), confidence: 70 };
+        }
       }
     }
   }
@@ -692,25 +914,46 @@ function extractFields(text) {
   const experienceSection = sections['EXPERIENCE'] || sections['WORK EXPERIENCE'] || sections['PROFESSIONAL EXPERIENCE'] || sections['EMPLOYMENT'] || '';
   const companySearchText = experienceSection || flatText;
 
-  // Strategy: Look for company name patterns
+  // Strategy: Look for company name patterns with stricter validation
+  // Words that indicate the match is part of a sentence, not a standalone company name
+  const SENTENCE_CONTEXT_WORDS = ['with', 'using', 'like', 'such', 'including', 'experience', 'hands-on',
+    'knowledge', 'proficient', 'skilled', 'expertise', 'familiar', 'working', 'worked',
+    'used', 'utilize', 'utilizing', 'various', 'multiple', 'different', 'building', 'built',
+    'develop', 'developing', 'developed', 'learn', 'learning', 'learned', 'trained'];
+  
   const companyPatterns = [
-    // "Company Name Pvt Ltd", "ABC Technologies", etc.
-    /([A-Z][A-Za-z\s&.]+(?:Pvt\.?\s*Ltd\.?|Private\s+Limited|Inc\.?|Corp\.?|LLC|LLP|Limited|Technologies|Solutions|Systems|Software|Services|Consulting|Labs|Studios|Group|Enterprises))/g,
-    // "at CompanyName" or "@ CompanyName"
-    /(?:at|@|with|in)\s+([A-Z][A-Za-z\s&.]+?)(?:\s+(?:as|from|since|\d|$))/gi,
+    // "Company Name Pvt Ltd", "ABC Technologies", etc. — require company suffix
+    /([A-Z][A-Za-z\s&.]+(?:Pvt\.?\s*Ltd\.?|Private\s+Limited|Inc\.?|Corp\.?|Corporation|LLC|LLP|Limited))/g,
+    // "at/with CompanyName" — require company suffix
+    /(?:at|@|with)\s+([A-Z][A-Za-z\s&.]{3,40}?(?:Pvt\.?\s*Ltd\.?|Inc\.?|Corp\.?|LLC|Limited))(?:\s|$|[.,;])/gi,
     // "CompanyName - Role" or "CompanyName | Role"
-    /([A-Z][A-Za-z\s&.]{3,40})\s*[-|]\s*(?:software|developer|engineer|manager|analyst|designer|lead|senior|junior)/gi
+    /([A-Z][A-Za-z\s&.]{5,40})\s*[-|]\s*(?:software|developer|engineer|manager|analyst|designer|lead|senior|junior|branch|assistant|vice)/gi
   ];
 
   for (const pattern of companyPatterns) {
     const matches = companySearchText.match(pattern);
     if (matches) {
       for (const match of matches) {
-        const cleaned = match.replace(/(?:at|@|with|in)\s+/i, '').replace(/\s*[-|]\s*\w.*$/, '').trim();
-        if (cleaned.length >= 3 && cleaned.length <= 60) {
-          // Verify it's not a name we already extracted
+        let cleaned = match.replace(/(?:at|@|with)\s+/i, '').replace(/\s*[-|]\s*\w.*$/, '').trim();
+        // Must be at least 3 chars and contain at least one company keyword
+        const lowerCleaned = cleaned.toLowerCase();
+        const hasCompanyKeyword = ['ltd', 'limited', 'inc', 'corp', 'corporation', 'llc', 'llp', 'pvt', 'private']
+          .some(kw => lowerCleaned.includes(kw));
+        
+        // Check if this match appears inside a running sentence (false positive)
+        const matchIdx = companySearchText.toLowerCase().indexOf(lowerCleaned);
+        if (matchIdx > 0) {
+          const before = companySearchText.substring(Math.max(0, matchIdx - 30), matchIdx).toLowerCase().trim();
+          const lastWordBefore = before.split(/\s+/).pop();
+          if (SENTENCE_CONTEXT_WORDS.includes(lastWordBefore)) continue; // Skip — it's part of a sentence
+        }
+        
+        if (cleaned.length >= 5 && cleaned.length <= 60 && (hasCompanyKeyword || cleaned.split(/\s+/).length >= 2)) {
+          // Verify it's not the candidate name
           if (result.name.value && cleaned.toLowerCase() === result.name.value.toLowerCase()) continue;
-          result.company = { value: cleaned, confidence: 80 };
+          // Verify it's not a generic phrase
+          if (['web development', 'software development', 'application development'].includes(lowerCleaned)) continue;
+          result.company = { value: cleaned, confidence: hasCompanyKeyword ? 85 : 70 };
           break;
         }
       }
@@ -718,40 +961,41 @@ function extractFields(text) {
     }
   }
 
-  // Check certification section for company names too
-  const certSection = sections['CERTIFICATION'] || sections['CERTIFICATIONS'] || '';
-  if (result.company.confidence < 60 && certSection) {
-    for (const pattern of companyPatterns) {
-      const matches = certSection.match(pattern);
-      if (matches) {
-        const cleaned = matches[0].trim();
-        if (cleaned.length >= 3 && cleaned.length <= 60) {
-          result.company = { value: cleaned, confidence: 65 };
-          break;
-        }
-      }
-    }
-  }
-
   // ════════════════════════════════════════
   // 9. LOCATION EXTRACTION
   // ════════════════════════════════════════
   const contactSection = sections['CONTACT'] || sections['CONTACT DETAILS'] || sections['PERSONAL DETAILS'] || '';
-  const locationSearchText = contactSection || flatText;
+  // For location, prioritize header (near name) and contact sections over full text
+  const locationSearchText = contactSection || headerText || flatText;
   const lowerLocText = locationSearchText.toLowerCase();
 
-  // Check cities first (more specific)
+  // Check cities first (more specific) — require minimum city name length to avoid false matches
   for (const city of LOCATION_KEYWORDS.cities) {
+    if (city.length < 3) continue; // Skip very short city names that could match random text
     const cityRegex = new RegExp('\\b' + city.replace(/[-]/g, '[-\\s]?') + '\\b', 'i');
     if (cityRegex.test(lowerLocText)) {
       // Try to get city + state together
       const cityIdx = lowerLocText.search(cityRegex);
       const surrounding = locationSearchText.substring(Math.max(0, cityIdx - 10), cityIdx + city.length + 50).trim();
       // Extract clean location: "City, State" or "City State PIN"
-      const locMatch = surrounding.match(/([A-Za-z\s-]+(?:,\s*[A-Za-z\s]+)?)/);
-      const location = locMatch ? locMatch[1].trim() : city.charAt(0).toUpperCase() + city.slice(1);
-      result.location = { value: location.length <= 50 ? location : city.charAt(0).toUpperCase() + city.slice(1), confidence: 90 };
-      break;
+      const locMatch = surrounding.match(/([A-Za-z][A-Za-z\s-]{2,}(?:,\s*[A-Za-z][A-Za-z\s]+)?)/);
+      let location = locMatch ? locMatch[1].trim() : city.charAt(0).toUpperCase() + city.slice(1);
+      
+      // Final validation: location should not contain company keywords
+      const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+        'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+      const COMPANY_LOC_WORDS = ['bank', 'ltd', 'limited', 'pvt', 'private', 'inc', 'corp', 'llc', 'llp',
+        'technologies', 'solutions', 'software', 'services', 'group', 'enterprises'];
+      
+      // Remove company words from the location
+      const locWords = location.split(/\s+/);
+      const cleanLocWords = locWords.filter(w => !COMPANY_LOC_WORDS.includes(w.toLowerCase()));
+      location = cleanLocWords.join(' ').trim();
+      
+      if (location.length >= 3 && !MONTHS.includes(location.toLowerCase()) && cleanLocWords.length > 0) {
+        result.location = { value: location.length <= 50 ? location : city.charAt(0).toUpperCase() + city.slice(1), confidence: 90 };
+        break;
+      }
     }
   }
 
@@ -913,11 +1157,16 @@ async function parseResume(buffer, mimetype, filename = '') {
       if (Tesseract && process.env.NODE_ENV !== 'production') strategies.push('tesseract-ocr');
       if (extractText) strategies.push('textract');
 
-      throw new Error(
-        'This resume appears to be a scanned/image-based PDF. ' +
-        'Please upload a text-based PDF or DOCX file instead. ' +
-        'Tip: Open the PDF, try selecting text — if you can\'t select text, it\'s a scanned image.'
-      );
+      // Check if OCR was attempted
+      const ocrAttempted = Tesseract && process.env.NODE_ENV !== 'production';
+      const errorMsg = ocrAttempted
+        ? 'Could not extract text from this PDF even with OCR. The image quality may be too low or the PDF may be corrupted. ' +
+          'Try uploading a clearer scan or a text-based PDF/DOCX file.'
+        : 'This resume appears to be a scanned/image-based PDF. ' +
+          'Please upload a text-based PDF or DOCX file instead. ' +
+          'Tip: Open the PDF, try selecting text — if you can\'t select text, it\'s a scanned image.';
+
+      throw new Error(errorMsg);
     }
 
     const parsed = extractFields(cleanText);

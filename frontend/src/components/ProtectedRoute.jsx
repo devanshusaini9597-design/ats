@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Lock, ArrowRight, X, Loader2 } from 'lucide-react';
+import BASE_API_URL from '../config';
 
 const ProtectedRoute = ({ children }) => {
   const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('isLoggedIn'));
@@ -24,7 +25,7 @@ const ProtectedRoute = ({ children }) => {
 
       try {
         // Hit any authenticated endpoint to verify token + user exists
-        const res = await fetch('https://skillnix-backend.onrender.com/api/notifications/count', {
+        const res = await fetch(`${BASE_API_URL}/api/notifications/count`, {
           headers: { 'Authorization': `Bearer ${storedToken}` }
         });
 

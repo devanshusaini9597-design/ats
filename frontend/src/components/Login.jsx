@@ -74,6 +74,9 @@ const Login = () => {
     }
 
     try {
+      console.log('🔵 [LOGIN] Attempting login with email:', email);
+      console.log('🔵 [LOGIN] API URL:', API_URL);
+      
       // ✅ Using the specific URL and Logic you provided
       const res = await fetch(`${API_URL}/api/login`, { 
         method: 'POST',
@@ -81,10 +84,14 @@ const Login = () => {
         body: JSON.stringify({ email, password })
       });
 
+      console.log('🔵 [LOGIN] Response status:', res.status, 'ok:', res.ok);
+      
       const data = await res.json();
+      console.log('🔵 [LOGIN] Response data:', data);
 
       if (res.ok) {
         // --- SUCCESS CASE ---
+        console.log('🟢 [LOGIN] Login successful, saving token and redirecting...');
         localStorage.setItem('token', data.token);
         localStorage.setItem('userEmail', email);
         localStorage.setItem('userName', data.user?.name || '');
@@ -93,10 +100,12 @@ const Login = () => {
         setSuccess('Login Successful! Redirecting...');
         
         setTimeout(() => {
+          console.log('🟢 [LOGIN] Redirecting to /homeunder');
           window.location.href = '/homeunder'; // Direct redirect
         }, 1000);
       } else {
         // Check if email is not found
+        console.log('🟡 [LOGIN] Login failed with message:', data.message);
         if (data.message === 'email_not_found') {
           setUnmatchedEmail(email);
           setShowSignupModal(true);
@@ -106,7 +115,7 @@ const Login = () => {
         }
       }
     } catch (err) {
-      console.error('Login Error:', err);
+      console.error('🔴 [LOGIN] Network/Request Error:', err);
       setError("Server se connect nahi ho paa raha. Please wait 30 seconds and try again.");
     }
   };

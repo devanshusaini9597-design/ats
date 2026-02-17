@@ -46,11 +46,14 @@ const ResumeParsing = () => {
         formData.append('resume', file);
 
         try {
-          // Add 25s timeout to prevent hanging on slow server
+          // Add 60s timeout per resume to handle large/complex files
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 25000);
+          const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-          const response = await authenticatedFetch(`${BASE_API_URL}/candidates/parse-logic`, {
+          const parseUrl = `${BASE_API_URL}/candidates/parse-logic`;
+          console.log('📄 Resume parse request:', { url: parseUrl, fileName: file.name, fileSize: file.size, fileType: file.type, hasToken: !!localStorage.getItem('token') });
+
+          const response = await authenticatedFetch(parseUrl, {
             method: 'POST',
             body: formData,
             signal: controller.signal,
@@ -100,8 +103,14 @@ const ResumeParsing = () => {
             metadata: result.metadata || {}
           });
         } catch (err) {
-          // Print fetch/network error to console
-          console.error('Resume parsing fetch error:', err);
+          // Detailed fetch/network error to console
+          console.error('❌ Resume parsing fetch error:', {
+            name: err.name,
+            message: err.message,
+            url: `${BASE_API_URL}/candidates/parse-logic`,
+            fileName: file.name,
+            stack: err.stack
+          });
           const errorMsg = err.name === 'AbortError'
             ? 'Request timed out. This resume may be scanned/image-based. Please try a text-based PDF or DOCX.'
             : err.message;
@@ -113,9 +122,9 @@ const ResumeParsing = () => {
           });
         }
 
-        // Small delay between files to prevent server overload
+        // Delay between files to let server finish processing
         if (files.length > 1) {
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 1500));
         }
       }
 

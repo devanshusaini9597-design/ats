@@ -20,9 +20,11 @@ import AnalyticsDashboard from './components/AnalyticsDashboard';
 import CandidateSearch from './components/CandidateSearch';
 import ProtectedRoute from './components/ProtectedRoute';
 import ManageMasterData from './components/ManageMasterData';
-import ManageCompany from './components/ManageCompany';
 import EmailTemplatesPage from './components/EmailTemplatesPage';
 import EmailSettingsPage from './components/EmailSettingsPage';
+import ProfileSettingsPage from './components/ProfileSettingsPage';
+import TeamPage from './components/TeamPage';
+import ResetPasswordPage from './components/ResetPasswordPage';
 
 // Jobs Component Import
 import Jobs from './pages/Jobs';
@@ -36,6 +38,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
 
           {/* Protected Routes - Require Authentication */}
           <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
@@ -52,9 +55,10 @@ function App() {
           <Route path="/manage-positions" element={<ProtectedRoute><ManageMasterData key="positions" title="Positions" apiEndpoint="/api/positions" navigateBack="/dashboard" /></ProtectedRoute>} />
           <Route path="/manage-clients" element={<ProtectedRoute><ManageMasterData key="clients" title="Clients" apiEndpoint="/api/clients" navigateBack="/dashboard" /></ProtectedRoute>} />
           <Route path="/manage-sources" element={<ProtectedRoute><ManageMasterData key="sources" title="Sources" apiEndpoint="/api/sources" navigateBack="/dashboard" /></ProtectedRoute>} />
-          <Route path="/manage-company" element={<ProtectedRoute><ManageCompany /></ProtectedRoute>} />
           <Route path="/email-templates" element={<ProtectedRoute><EmailTemplatesPage /></ProtectedRoute>} />
           <Route path="/email-settings" element={<ProtectedRoute><EmailSettingsPage /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><ProfileSettingsPage /></ProtectedRoute>} />
+          <Route path="/team" element={<ProtectedRoute><TeamPage /></ProtectedRoute>} />
         </Routes>
       </div>
     </Router>

@@ -21,6 +21,7 @@ const SMTP_PRESETS = {
 
 const EmailSettingsPage = () => {
   const toast = useToast();
+  const loggedInEmail = localStorage.getItem('userEmail') || '';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -76,7 +77,7 @@ const EmailSettingsPage = () => {
       if (isUnauthorized(res)) return handleUnauthorized();
       const data = await res.json();
       if (data.success) {
-        toast.success('Email settings saved!');
+        toast.success(data.message || 'Email settings verified & saved!');
         setSettings(data.settings);
       } else {
         toast.error(data.message);
@@ -175,6 +176,21 @@ const EmailSettingsPage = () => {
             <div>
               <p className="text-sm font-semibold text-amber-800">No Email Configured</p>
               <p className="text-xs text-amber-600">Emails are sent from the system default. Configure your own email below — supports Gmail, Outlook, domain emails (Hostinger, GoDaddy, Zoho), and any custom SMTP.</p>
+            </div>
+          </div>
+        )}
+
+        {/* Account Identity Notice */}
+        {settings.isConfigured && settings.smtpEmail && loggedInEmail && settings.smtpEmail.toLowerCase() !== loggedInEmail.toLowerCase() && (
+          <div className="flex items-start gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl">
+            <Info size={18} className="text-blue-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-blue-800">Different Sending & Login Email</p>
+              <p className="text-xs text-blue-600 mt-0.5">
+                You're logged in as <strong>{loggedInEmail}</strong> but emails will be sent from <strong>{settings.smtpEmail}</strong>.
+                This is fine if you own both accounts. Make sure the SMTP credentials (App Password) belong to <strong>{settings.smtpEmail}</strong>.
+              </p>
+              <p className="text-[11px] text-blue-500 mt-1">Tip: The test email is sent to your configured email ({settings.smtpEmail}), not your login email. Check that inbox.</p>
             </div>
           </div>
         )}
@@ -292,7 +308,22 @@ const EmailSettingsPage = () => {
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
+                  onClick={async () => {
+                    if (!showPassword && settings.hasPassword && settings.smtpAppPassword === '••••••••••••••••') {
+                      try {
+                        const res = await authenticatedFetch(`${BASE}/api/email-settings/reveal-password`);
+                        if (res.ok) {
+                          const data = await res.json();
+                          if (data.success) {
+                            setSettings(prev => ({ ...prev, smtpAppPassword: data.password }));
+                          }
+                        }
+                      } catch (err) {
+                        console.error('Reveal password error:', err);
+                      }
+                    }
+                    setShowPassword(!showPassword);
+                  }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                 >
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -380,7 +411,7 @@ const EmailSettingsPage = () => {
               disabled={saving || !settings.smtpEmail}
               className="px-5 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2 shadow-sm"
             >
-              {saving ? <><Loader2 size={15} className="animate-spin" /> Saving...</> : <><Save size={15} /> Save Settings</>}
+              {saving ? <><Loader2 size={15} className="animate-spin" /> Verifying & Saving...</> : <><Save size={15} /> Save Settings</>}
             </button>
             <button
               onClick={handleTest}

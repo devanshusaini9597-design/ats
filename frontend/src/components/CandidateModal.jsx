@@ -580,7 +580,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Upload, X } from 'lucide-react';
+import { ArrowLeft, Plus, Upload, X, User, Calendar } from 'lucide-react';
 import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import useCountries from '../utils/useCountries';
@@ -594,7 +594,6 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
     const [isLoading, setIsLoading] = useState(false);
     const [isAutoParsing, setIsAutoParsing] = useState(false);
     const [positions, setPositions] = useState([]);
-    const [companies, setCompanies] = useState([]);
     const [clients, setClients] = useState([]);
     const [sources, setSources] = useState([]);
 
@@ -635,9 +634,8 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                 const token = localStorage.getItem('token');
                 const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
 
-                const [positionsRes, companiesRes, clientsRes, sourcesRes] = await Promise.all([
+                const [positionsRes, clientsRes, sourcesRes] = await Promise.all([
                     fetch(`${BASE_API_URL}/api/positions`, { headers }),
-                    fetch(`${BASE_API_URL}/api/companies`, { headers }),
                     fetch(`${BASE_API_URL}/api/clients`, { headers }),
                     fetch(`${BASE_API_URL}/api/sources`, { headers })
                 ]);
@@ -645,11 +643,6 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                 if (positionsRes.ok) {
                     const positionsData = await positionsRes.json();
                     setPositions(positionsData);
-                }
-
-                if (companiesRes.ok) {
-                    const companiesData = await companiesRes.json();
-                    setCompanies(companiesData);
                 }
 
                 if (clientsRes.ok) {
@@ -874,7 +867,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                                 <label className="text-[11px] font-bold text-[#4338ca] uppercase tracking-wider">Source *</label>
                                 <select name="source" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.source || ''} onChange={handleInputChange} required>
                                     <option value="">Select Source</option>
-                                    {sourceOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                                    {sources.map(s => <option key={s._id || s} value={s.name || s}>{s.name || s}</option>)}
                                 </select>
                             </div>
 
@@ -973,10 +966,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
 
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Company</label>
-                            <select name="companyName" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.companyName || ''} onChange={handleInputChange}>
-                                <option value="">Select Company</option>
-                                {companies.map(company => <option key={company._id} value={company.name}>{company.name}</option>)}
-                            </select>
+                            <input type="text" name="companyName" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" placeholder="Company Name" value={formData.companyName || ''} onChange={handleInputChange} />
                         </div>
 
                         <div className="space-y-1">
@@ -1061,10 +1051,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                             <input type="date" name="callBackDate" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.callBackDate || ''} onChange={handleInputChange} />
                         </div>
 
-                        <div className="space-y-1">
-                            <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Comment</label>
-                            <input type="text" name="srNo" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" placeholder="Optional comment" value={formData.srNo || ''} onChange={handleInputChange} />
-                        </div>
+
                     </div>
 
                     {/* Footer Actions - Sticky Bottom */}

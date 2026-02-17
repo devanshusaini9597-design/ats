@@ -4,21 +4,23 @@ import axios from 'axios';
 import * as XLSX from 'xlsx';
 import { 
   Plus, Search, Mail, MessageCircle,Upload, 
-  Filter, CheckSquare, Square, FileText, Cpu, Trash2, Edit, X, Briefcase,BarChart3, AlertCircle, RefreshCw, Download, Eye, Info 
+  Filter, CheckSquare, Square, FileText, Cpu, Trash2, Edit, X, Briefcase,BarChart3, AlertCircle, RefreshCw, Download, Eye, Info, Share2
 } from 'lucide-react';
 import { useParsing } from '../hooks/useParsing';
 import PhoneInput from 'react-phone-input-2';
 import 'react-phone-input-2/lib/style.css';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import BASE_API_URL from '../config';
 import ColumnMapper from './ColumnMapper';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
+import ConfirmationModal from './ConfirmationModal';
 
 
 const ATS = forwardRef((props, ref) => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const fileInputRef = useRef(null);
   const autoUploadInputRef = useRef(null);
@@ -34,6 +36,8 @@ const ATS = forwardRef((props, ref) => {
   const [candidates, setCandidates] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState('all');
+  const [viewMode, setViewMode] = useState(searchParams.get('view') || 'all'); // 'all' | 'shared'
   const [filterJob, setFilterJob] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -56,11 +60,17 @@ const ATS = forwardRef((props, ref) => {
   const [pendingFile, setPendingFile] = useState(null);
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [emailRecipient, setEmailRecipient] = useState(null);
+  const [bulkEmailRecipients, setBulkEmailRecipients] = useState([]); // For bulk email mode
   const [emailType, setEmailType] = useState('interview');
   const [customMessage, setCustomMessage] = useState('');
   const [isSendingEmail, setIsSendingEmail] = useState(false);
-  const [emailCC, setEmailCC] = useState('');
-  const [emailBCC, setEmailBCC] = useState('');
+  const [emailCC, setEmailCC] = useState([]);
+  const [emailBCC, setEmailBCC] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [ccInput, setCcInput] = useState('');
+  const [bccInput, setBccInput] = useState('');
+  const [showCCPicker, setShowCCPicker] = useState(false);
+  const [showBCCPicker, setShowBCCPicker] = useState(false);
   
   // Quick Send editable fields
   const [quickName, setQuickName] = useState('');
@@ -97,6 +107,20 @@ const ATS = forwardRef((props, ref) => {
   const [reviewFilter, setReviewFilter] = useState('all'); // 'all', 'review', 'blocked'
   const [importConfirmation, setImportConfirmation] = useState(null); // {candidateName, show: true}
 
+  // Download Excel confirmation modal
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+
+  // Share Candidate Modal
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [showShareConfirmation, setShowShareConfirmation] = useState(false);
+  const [shareCandidate, setShareCandidate] = useState(null);
+  const [selectedShareMembers, setSelectedShareMembers] = useState([]);
+  const [selectedCandidatesForShare, setSelectedCandidatesForShare] = useState([]);
+  const [isSharingCandidate, setIsSharingCandidate] = useState(false);
+
+  // Confirmation Modal States
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, type: 'warning', title: '', message: '', details: null, confirmText: 'Confirm', onConfirm: () => {}, isLoading: false });
+
   // ✅ Advanced Search Panel (inline, above table)
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [advancedSearchFilters, setAdvancedSearchFilters] = useState({
@@ -111,6 +135,10 @@ const ATS = forwardRef((props, ref) => {
     expectedCtcMax: '',
     date: ''
   });
+
+  // Sort controls
+  const [sortField, setSortField] = useState('date');
+  const [sortOrder, setSortOrder] = useState('desc');
 
  const initialFormState = {
     srNo: '', date: new Date().toISOString().split('T')[0], location: '', position: '',
@@ -135,7 +163,6 @@ const ATS = forwardRef((props, ref) => {
 
   // Master data for dropdowns (matching AddCandidatePage)
   const [masterPositions, setMasterPositions] = useState([]);
-  const [masterCompanies, setMasterCompanies] = useState([]);
   const [masterClients, setMasterClients] = useState([]);
   const [masterSources, setMasterSources] = useState([]);
   const [countryCode, setCountryCode] = useState('+91');
@@ -148,16 +175,19 @@ const ATS = forwardRef((props, ref) => {
       try {
         const token = localStorage.getItem('token');
         const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-        const [positionsRes, companiesRes, clientsRes, sourcesRes] = await Promise.all([
+        const [positionsRes, clientsRes, sourcesRes, teamRes] = await Promise.all([
           fetch(`${BASE_API_URL}/api/positions`, { headers }),
-          fetch(`${BASE_API_URL}/api/companies`, { headers }),
           fetch(`${BASE_API_URL}/api/clients`, { headers }),
-          fetch(`${BASE_API_URL}/api/sources`, { headers })
+          fetch(`${BASE_API_URL}/api/sources`, { headers }),
+          fetch(`${BASE_API_URL}/api/team`, { headers })
         ]);
         if (positionsRes.ok) setMasterPositions(await positionsRes.json());
-        if (companiesRes.ok) setMasterCompanies(await companiesRes.json());
         if (clientsRes.ok) setMasterClients(await clientsRes.json());
         if (sourcesRes.ok) setMasterSources(await sourcesRes.json());
+        if (teamRes.ok) {
+          const teamData = await teamRes.json();
+          if (teamData.success) setTeamMembers(teamData.members || []);
+        }
       } catch (error) {
         console.error('Error fetching master data:', error);
       }
@@ -165,35 +195,19 @@ const ATS = forwardRef((props, ref) => {
     fetchMasterData();
   }, []);
 
-  // --- Resume Preview with Blob URL (fixes cross-origin + extensionless files) ---
-  const handleResumePreview = async (resumePath) => {
+  // --- Resume Preview (direct URL in iframe - simple & reliable) ---
+  const handleResumePreview = (resumePath) => {
+    if (!resumePath) {
+      toast.error('No resume available for this candidate');
+      return;
+    }
     const url = resumePath.startsWith('http') ? resumePath : `${BASE_API_URL}${resumePath}`;
     setPreviewResumeUrl(url);
-    setIsPreviewLoading(true);
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch resume');
-      const blob = await response.blob();
-      // Detect PDF from magic bytes if MIME type is wrong
-      let type = blob.type;
-      if (type === 'application/octet-stream' || !type) {
-        const header = await blob.slice(0, 5).text();
-        if (header.startsWith('%PDF')) type = 'application/pdf';
-      }
-      const typedBlob = new Blob([blob], { type: type || 'application/pdf' });
-      const blobUrl = URL.createObjectURL(typedBlob);
-      setPreviewBlobUrl(blobUrl);
-    } catch (err) {
-      console.error('Resume preview error:', err);
-      toast.error('Failed to preview resume');
-      setPreviewResumeUrl(null);
-    } finally {
-      setIsPreviewLoading(false);
-    }
+    setPreviewBlobUrl(url);
+    setIsPreviewLoading(false);
   };
 
   const closeResumePreview = () => {
-    if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
     setPreviewBlobUrl(null);
     setPreviewResumeUrl(null);
   };
@@ -217,6 +231,7 @@ const ATS = forwardRef((props, ref) => {
       });
       if (search) params.append('search', search);
       if (position) params.append('position', position);
+      if (viewMode === 'shared') params.append('view', 'shared');
 
       const res = await authenticatedFetch(`${API_URL}?${params.toString()}`);
       
@@ -239,12 +254,12 @@ const ATS = forwardRef((props, ref) => {
         const total = response.pagination?.totalCount || 0;
         setTotalPages(pages);
         setTotalRecordsInDB(total);
-        console.log('✅ Fetched', candidatesData.length, 'candidates from page', page, 'totalPages:', pages, 'Total in DB:', total);
+        // Fetched candidates from page
       } else if (Array.isArray(response)) {
         candidatesData = response;
         setTotalPages(1);
         setTotalRecordsInDB(candidatesData.length);
-        console.log('✅ Fetched', candidatesData.length, 'candidates (direct array)');
+        // Fetched candidates (direct array)
       }
       
       if (page === 1) {
@@ -274,7 +289,7 @@ const ATS = forwardRef((props, ref) => {
 
   // ✅ Expose methods to parent via ref
   useImperativeHandle(ref, () => {
-    console.log('📤 useImperativeHandle called - exposing ATS methods');
+    // useImperativeHandle - exposing ATS methods
     return {
       triggerAutoImport: () => {
         console.log('🎬 triggerAutoImport called');
@@ -297,16 +312,21 @@ const ATS = forwardRef((props, ref) => {
     };
   });
 
-  // ✅ INITIAL DATA LOAD - Fire once on component mount
+  // Read URL view param on mount / when URL changes
   useEffect(() => {
-    console.log('🔄 ATS Component mounted - fetching initial data...');
+    const urlView = searchParams.get('view');
+    if (urlView && urlView !== viewMode) setViewMode(urlView);
+  }, [searchParams]);
+
+  // INITIAL DATA LOAD + re-fetch when viewMode changes
+  useEffect(() => {
     fetchData(1, { search: '', position: '' });
-  }, []); // Empty dependency = mount only
+  }, [viewMode]);
 
   // ✅ SEARCH/FILTER CHANGES - Reset to page 1 (filtering is all client-side)
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, advancedSearchFilters, showOnlyCorrect]);
+  }, [searchQuery, searchScope, advancedSearchFilters, showOnlyCorrect]);
 
   // ✅ MONITOR REVIEW DATA - When confirmation closes, ensure UI refreshes
   useEffect(() => {
@@ -376,12 +396,6 @@ const handleBulkUpload = async (event) => {
 const handleAutoUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
-
-    const confirm = window.confirm("⚡ REVIEW & IMPORT MODE\n\nSystem will validate Excel data and show you:\n• ✅ Ready records (auto-import)\n• ⚠️  Results needing review (manual fix)\n• ❌ Blocked records (need corrections)\n\nYou can edit and fix issues before importing.\n\nProceed?");
-    if (!confirm) {
-        event.target.value = null;
-        return;
-    }
 
     try {
         setIsUploading(true);
@@ -686,10 +700,8 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
       if (!customMsg) return;
     }
 
-    if (!window.confirm(`Send ${selectedType} emails to ${validCandidates.length} candidates?`)) {
-      return;
-    }
-
+    const proceedWithBulkEmail = async () => {
+      setConfirmModal(prev => ({ ...prev, isOpen: false }));
     try {
       setIsUploading(true);
 
@@ -728,6 +740,15 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
     } finally {
       setIsUploading(false);
     }
+    };
+
+    setConfirmModal({
+      isOpen: true, type: 'info',
+      title: 'Send Bulk Emails',
+      message: `Send ${selectedType} emails to ${validCandidates.length} candidate(s)?`,
+      confirmText: `Send ${validCandidates.length} Email${validCandidates.length > 1 ? 's' : ''}`,
+      onConfirm: proceedWithBulkEmail
+    });
   };
 
   // ===================== BULK EMAIL WORKFLOW FUNCTIONS =====================
@@ -747,11 +768,31 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
       return;
     }
     
-    // Initialize selected emails
-    const emails = new Set(validCandidates.map(c => c.email));
-    setSelectedEmails(emails);
-    setBulkEmailStep('select');
-    setEmailType('interview'); // Default email type
+    // Open single email modal with multiple recipients (bulk mode)
+    setBulkEmailRecipients(validCandidates);
+    setEmailRecipient(validCandidates[0]); // Set first as primary for UI
+    setEmailMode('quick'); // Start in quick send mode
+    setEmailType('interview');
+    setCustomMessage('');
+    setEmailCC([]);
+    setEmailBCC([]);
+    setShowQuickPreview(false);
+    setShowEmailModal(true);
+    
+    // Fetch templates if needed
+    if (emailTemplates.length === 0) {
+      (async () => {
+        try {
+          const res = await authenticatedFetch(`${BASE_API_URL}/api/email-templates`);
+          const data = await res.json();
+          if (data.success && data.templates.length > 0) {
+            setEmailTemplates(data.templates);
+          }
+        } catch (err) {
+          console.error('Failed to load templates:', err);
+        }
+      })();
+    }
   };
   
   // Toggle email selection
@@ -849,8 +890,8 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
     setEmailStatuses({});
     setEmailType('interview');
     setCustomMessage('');
-    setEmailCC('');
-    setEmailBCC('');
+    setEmailCC([]);
+    setEmailBCC([]);
     setSelectedIds([]);
   };
 
@@ -879,58 +920,91 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
       toast.warning('No valid phone numbers found in selected candidates.');
       return;
     }
-    if (!window.confirm(`Open WhatsApp for ${withPhone.length} candidate(s)?\n\n(Each will open in a new tab)`)) return;
-    withPhone.forEach((c, i) => {
-      setTimeout(() => {
-        const cleanPhone = c.contact.replace(/\D/g, '');
-        window.open(`https://wa.me/${cleanPhone}`, '_blank');
-      }, i * 500); // stagger so browser doesn't block popups
+    setConfirmModal({
+      isOpen: true, type: 'info', title: 'Open WhatsApp',
+      message: `Open WhatsApp for ${withPhone.length} candidate(s)? Each will open in a new tab.`,
+      confirmText: 'Open WhatsApp',
+      onConfirm: () => {
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        withPhone.forEach((c, i) => {
+          setTimeout(() => {
+            const cleanPhone = c.contact.replace(/\D/g, '');
+            window.open(`https://wa.me/${cleanPhone}`, '_blank');
+          }, i * 500);
+        });
+      }
     });
   };
 
   // Bulk delete selected candidates
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     if (selectedIds.length === 0) {
       toast.warning('Please select at least one candidate.');
       return;
     }
-    if (!window.confirm(`Delete ${selectedIds.length} selected candidate(s)? This cannot be undone.`)) return;
-    try {
-      let deleted = 0;
-      for (const id of selectedIds) {
-        const res = await authenticatedFetch(`${API_URL}/${id}`, { method: 'DELETE' });
-        if (res.ok) deleted++;
+    setConfirmModal({
+      isOpen: true, type: 'delete',
+      title: `Delete ${selectedIds.length} Candidate${selectedIds.length > 1 ? 's' : ''}`,
+      message: `Are you sure you want to delete ${selectedIds.length} selected candidate(s)? This action cannot be undone.`,
+      confirmText: `Delete ${selectedIds.length} Candidate${selectedIds.length > 1 ? 's' : ''}`,
+      isLoading: false,
+      onConfirm: async () => {
+        setConfirmModal(prev => ({ ...prev, isLoading: true }));
+        try {
+          const res = await authenticatedFetch(`${API_URL}/bulk-delete`, {
+            method: 'POST',
+            body: JSON.stringify({ ids: selectedIds })
+          });
+          const data = await res.json();
+          if (data.success) {
+            toast.success(`Deleted ${data.deletedCount} of ${selectedIds.length} candidates.`);
+          } else {
+            toast.error(data.message || 'Failed to delete candidates.');
+          }
+          setSelectedIds([]);
+          fetchData(1, { search: searchQuery, position: filterJob });
+        } catch (err) {
+          console.error('Bulk delete error:', err);
+          toast.error('Failed to delete candidates.');
+        } finally {
+          setConfirmModal(prev => ({ ...prev, isOpen: false, isLoading: false }));
+        }
       }
-      toast.success(`Deleted ${deleted} of ${selectedIds.length} candidates.`);
-      setSelectedIds([]);
-      fetchData(1, { search: searchQuery, position: filterJob });
-    } catch (err) {
-      console.error('Bulk delete error:', err);
-      toast.error('Failed to delete some candidates.');
-    }
+    });
   };
 
   // Bulk status update
-  const handleBulkStatusUpdate = async (newStatus) => {
+  const handleBulkStatusUpdate = (newStatus) => {
     if (selectedIds.length === 0) return;
-    if (!window.confirm(`Update status to "${newStatus}" for ${selectedIds.length} candidate(s)?`)) return;
-    try {
-      let updated = 0;
-      for (const id of selectedIds) {
-        const res = await authenticatedFetch(`${API_URL}/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newStatus })
-        });
-        if (res.ok) updated++;
+    setConfirmModal({
+      isOpen: true, type: 'edit',
+      title: 'Update Status',
+      message: `Update status to "${newStatus}" for ${selectedIds.length} candidate(s)?`,
+      confirmText: `Update to ${newStatus}`,
+      isLoading: false,
+      onConfirm: async () => {
+        setConfirmModal(prev => ({ ...prev, isLoading: true }));
+        try {
+          let updated = 0;
+          for (const id of selectedIds) {
+            const res = await authenticatedFetch(`${API_URL}/${id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: newStatus })
+            });
+            if (res.ok) updated++;
+          }
+          toast.success(`Updated ${updated} of ${selectedIds.length} candidates to "${newStatus}".`);
+          setSelectedIds([]);
+          fetchData(1, { search: searchQuery, position: filterJob });
+        } catch (err) {
+          console.error('Bulk status update error:', err);
+          toast.error('Failed to update some candidates.');
+        } finally {
+          setConfirmModal(prev => ({ ...prev, isOpen: false, isLoading: false }));
+        }
       }
-      toast.success(`Updated ${updated} of ${selectedIds.length} candidates to "${newStatus}".`);
-      setSelectedIds([]);
-      fetchData(1, { search: searchQuery, position: filterJob });
-    } catch (err) {
-      console.error('Bulk status update error:', err);
-      toast.error('Failed to update some candidates.');
-    }
+    });
   };
 
   // const handleDelete = async (id) => {
@@ -942,11 +1016,17 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
   //   }
   // };
 
-const handleDelete = async (id) => {
-    if (window.confirm("Are you sure?")) {
+const handleDelete = (id) => {
+    const candidate = candidates.find(c => c._id === id);
+    setConfirmModal({
+      isOpen: true, type: 'delete',
+      title: 'Delete Candidate',
+      message: `Are you sure you want to delete "${candidate?.name || 'this candidate'}"? This action cannot be undone.`,
+      confirmText: 'Delete Candidate',
+      isLoading: false,
+      onConfirm: async () => {
+        setConfirmModal(prev => ({ ...prev, isLoading: true }));
         try {
-            console.log("Deleting ID:", id); // Check karein console mein id sahi aa rahi hai
-            
             const response = await authenticatedFetch(`${API_URL}/${id}`, { 
                 method: 'DELETE' 
             });
@@ -966,13 +1046,43 @@ const handleDelete = async (id) => {
         } catch (err) {
             console.error("Delete Error:", err);
             toast.error('Network error: Could not reach the server.');
+        } finally {
+          setConfirmModal(prev => ({ ...prev, isOpen: false, isLoading: false }));
         }
-    }
+      }
+    });
 };
 
-
-
-
+  // ✅ Download Excel for a single candidate
+  const handleDownloadExcel = (candidate) => {
+    const data = [{
+      'Name': candidate.name || '',
+      'Email': candidate.email || '',
+      'Contact': candidate.contact || '',
+      'Company': candidate.companyName || '',
+      'Position': candidate.position || '',
+      'Location': candidate.location || '',
+      'Experience': candidate.experience || '',
+      'Current CTC': candidate.ctc || '',
+      'Expected CTC': candidate.expectedCtc || '',
+      'Notice Period': candidate.noticePeriod || '',
+      'Status': candidate.status || '',
+      'Client': candidate.client || '',
+      'SPOC': candidate.spoc || '',
+      'Source': candidate.source || '',
+      'FLS': candidate.fls || '',
+      'Date': candidate.date ? new Date(candidate.date).toLocaleDateString('en-IN') : '',
+      'Remark': candidate.remark || ''
+    }];
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Candidate');
+    const colWidths = Object.keys(data[0]).map(key => ({ wch: Math.max(key.length, String(data[0][key]).length) + 2 }));
+    ws['!cols'] = colWidths;
+    const fileName = `${(candidate.name || 'Candidate').replace(/\s+/g, '_')}_Details.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    toast.success(`Downloaded ${candidate.name || 'candidate'} details`);
+  };
 
   const handleEdit = async (candidate) => {
     try {
@@ -1025,8 +1135,10 @@ const handleDelete = async (id) => {
     setEmailRecipient(candidate);
     setEmailType('interview');
     setCustomMessage('');
-    setEmailCC('');
-    setEmailBCC('');
+    setEmailCC([]);
+    setEmailBCC([]);
+    setCcInput('');
+    setBccInput('');
     setQuickName(candidate.name || '');
     setQuickPosition(candidate.position || '');
     setQuickDepartment(candidate.department || '');
@@ -1077,14 +1189,18 @@ const handleDelete = async (id) => {
     if (!emailRecipient || !selectedTemplate) return;
     setIsSendingEmail(true);
     try {
-      const parseEmails = (str) => str.split(',').map(e => e.trim()).filter(e => e && e.includes('@'));
+      // Build recipient list (supports both single and bulk)
+      const recipients = bulkEmailRecipients.length > 0
+        ? bulkEmailRecipients.map(c => ({ email: c.email, name: c.name }))
+        : [{ email: emailRecipient.email, name: emailRecipient.name }];
+
       const body = {
         templateId: selectedTemplate._id,
-        recipients: { email: emailRecipient.email, name: emailRecipient.name },
+        recipients: recipients,
         variables: templateVars,
       };
-      if (emailCC.trim()) body.cc = parseEmails(emailCC);
-      if (emailBCC.trim()) body.bcc = parseEmails(emailBCC);
+      if (emailCC.length > 0) body.cc = emailCC;
+      if (emailBCC.length > 0) body.bcc = emailBCC;
 
       const response = await authenticatedFetch(`${BASE_API_URL}/api/email-templates/send`, {
         method: 'POST',
@@ -1093,9 +1209,16 @@ const handleDelete = async (id) => {
       });
       const data = await response.json();
       if (data.success) {
-        toast.success(`Email sent to ${emailRecipient.email}`);
-        setShowEmailModal(false);
-        setEmailRecipient(null);
+        if (bulkEmailRecipients.length > 0) {
+          toast.success(`Bulk email sent! Sent: ${data.data.success?.length || 0}, Failed: ${data.data.failed?.length || 0}`);
+          setShowEmailModal(false);
+          setBulkEmailRecipients([]);
+          setSelectedIds([]);
+        } else {
+          toast.success(`Email sent to ${emailRecipient.email}`);
+          setShowEmailModal(false);
+          setEmailRecipient(null);
+        }
         setSelectedTemplate(null);
       } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
         toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
@@ -1116,56 +1239,79 @@ const handleDelete = async (id) => {
     try {
       setIsSendingEmail(true);
 
-      // Parse CC and BCC from comma-separated strings
-      const parseEmails = (emailString) => {
-        return emailString
-          .split(',')
-          .map(email => email.trim())
-          .filter(email => email && email.includes('@'));
-      };
+      // If bulk mode, send to all recipients
+      if (bulkEmailRecipients.length > 0) {
+        const response = await authenticatedFetch(`${BASE_API_URL}/api/email/send-bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            candidates: bulkEmailRecipients.map(c => ({
+              email: c.email,
+              name: c.name,
+              position: c.position,
+              department: c.department || 'N/A',
+              joiningDate: c.joiningDate || 'TBD'
+            })),
+            emailType: emailType,
+            customMessage: customMessage,
+            cc: emailCC,
+            bcc: emailBCC
+          })
+        });
 
-      const emailBody = {
-        email: emailRecipient.email,
-        name: quickName || emailRecipient.name,
-        position: quickPosition || emailRecipient.position,
-        emailType: emailType,
-        customMessage: customMessage,
-        department: quickDepartment || emailRecipient.department || 'N/A',
-        joiningDate: quickJoiningDate || emailRecipient.joiningDate || 'TBD'
-      };
+        const data = await response.json();
 
-      // Add CC if provided
-      if (emailCC.trim()) {
-        const ccEmails = parseEmails(emailCC);
-        if (ccEmails.length > 0) emailBody.cc = ccEmails;
-      }
-
-      // Add BCC if provided
-      if (emailBCC.trim()) {
-        const bccEmails = parseEmails(emailBCC);
-        if (bccEmails.length > 0) emailBody.bcc = bccEmails;
-      }
-
-      const response = await authenticatedFetch(`${BASE_API_URL}/api/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(emailBody)
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        let successMessage = `Email sent to ${emailRecipient.email}`;
-        if (emailCC.trim()) successMessage += ` (CC: ${emailCC})`;
-        if (emailBCC.trim()) successMessage += ` (BCC: ${emailBCC})`;
-        toast.success(successMessage);
-        setShowEmailModal(false);
-        setEmailRecipient(null);
-      } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
-        toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
-        setShowEmailModal(false);
+        if (data.success) {
+          toast.success(`Bulk email sent! Total: ${data.data.total}, Sent: ${data.data.sent}, Failed: ${data.data.failed}`);
+          setShowEmailModal(false);
+          setBulkEmailRecipients([]);
+          setSelectedIds([]);
+          setEmailRecipient(null);
+        } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+          toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
+          setShowEmailModal(false);
+        } else {
+          toast.error(`Failed to send bulk emails: ${data.message}`);
+        }
       } else {
-        toast.error(`Failed to send email: ${data.message}`);
+        // Single email mode (existing code)
+        const emailBody = {
+          email: emailRecipient.email,
+          name: quickName || emailRecipient.name,
+          position: quickPosition || emailRecipient.position,
+          emailType: emailType,
+          customMessage: customMessage,
+          department: quickDepartment || emailRecipient.department || 'N/A',
+          joiningDate: quickJoiningDate || emailRecipient.joiningDate || 'TBD'
+        };
+
+        // Add CC if provided
+        if (emailCC.length > 0) emailBody.cc = emailCC;
+
+        // Add BCC if provided
+        if (emailBCC.length > 0) emailBody.bcc = emailBCC;
+
+        const response = await authenticatedFetch(`${BASE_API_URL}/api/email/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(emailBody)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          let successMessage = `Email sent to ${emailRecipient.email}`;
+          if (emailCC.length > 0) successMessage += ` (CC: ${emailCC.join(', ')})`;
+          if (emailBCC.length > 0) successMessage += ` (BCC: ${emailBCC.join(', ')})`;
+          toast.success(successMessage);
+          setShowEmailModal(false);
+          setEmailRecipient(null);
+        } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+          toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
+          setShowEmailModal(false);
+        } else {
+          toast.error(`Failed to send email: ${data.message}`);
+        }
       }
     } catch (error) {
       console.error('Email send error:', error);
@@ -1175,6 +1321,76 @@ const handleDelete = async (id) => {
     }
   };
 
+  // ✅ Share Candidate with Team Members
+  const handleShareClick = (candidate) => {
+    // Support both single and bulk share
+    const selectedForBulk = candidates.filter(c => selectedIds.includes(c._id));
+    if (!candidate && selectedForBulk.length > 0) {
+      // Bulk mode from action bar - share selected candidates
+      setSelectedCandidatesForShare(selectedForBulk.map(c => c._id));
+      setShareCandidate(null);
+    } else if (selectedForBulk.length > 0 && candidate) {
+      // If items are selected but clicked on a specific one, still use selected
+      setSelectedCandidatesForShare(selectedForBulk.map(c => c._id));
+      setShareCandidate(null);
+    } else if (candidate) {
+      // Single mode - share one candidate
+      setSelectedCandidatesForShare([candidate._id]);
+      setShareCandidate(candidate);
+    } else {
+      toast.warning('Please select at least one candidate to share.');
+      return;
+    }
+    setSelectedShareMembers([]);
+    setShowShareModal(true);
+  };
+
+  const handleShareCandidate = async () => {
+    // Validation
+    if (selectedCandidatesForShare.length === 0 || selectedShareMembers.length === 0) {
+      toast.warning('Please select team members to share with');
+      return;
+    }
+
+    // Show confirmation modal first
+    if (!showShareConfirmation) {
+      setShowShareConfirmation(true);
+      return;
+    }
+
+    // Perform the actual share
+    setShowShareConfirmation(false);
+    setIsSharingCandidate(true);
+    try {
+      const response = await authenticatedFetch(`${BASE_API_URL}/candidates/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidateIds: selectedCandidatesForShare,
+          sharedWith: selectedShareMembers
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        const candidateWord = data.sharedCandidateCount > 1 ? 'candidates' : 'candidate';
+        const memberWord = data.sharedMemberCount > 1 ? 'members' : 'member';
+        toast.success(`${data.sharedCandidateCount} ${candidateWord} shared with ${data.sharedMemberCount} team ${memberWord}!`);
+        setShowShareModal(false);
+        setShareCandidate(null);
+        setSelectedShareMembers([]);
+        setSelectedCandidatesForShare([]);
+      } else {
+        toast.error(`Failed to share: ${data.message}`);
+      }
+    } catch (error) {
+      console.error('Share error:', error);
+      toast.error('Failed to share candidate. Please try again.');
+    } finally {
+      setIsSharingCandidate(false);
+    }
+  };
  
 const handleInputChange = async (e) => {
   const { name, value, files } = e.target;
@@ -1184,22 +1400,29 @@ const handleInputChange = async (e) => {
     setFormErrors(prev => ({ ...prev, [name]: '' }));
   }
 
-  // --- Auto-capitalize helper (Title Case) ---
-  const toTitleCase = (str) => str.replace(/\b\w/g, c => c.toUpperCase());
-
-  // --- Determine formatted value ---
   let finalValue = value;
 
   if (name === 'email') {
-    // Email: always lowercase, auto-fix common typos
     finalValue = value.toLowerCase()
       .replace(/@gnail\.con$/, '@gmail.com')
       .replace(/@gnail\.com$/, '@gmail.com')
       .replace(/@gmail\.con$/, '@gmail.com')
       .replace(/@gmal\.com$/, '@gmail.com');
-  } else if (name === 'name' || name === 'spoc' || name === 'location') {
-    // Auto-capitalize every word, trim leading spaces
-    finalValue = toTitleCase(value.replace(/^\s+/, ''));
+  } else if (name === 'name' || name === 'spoc' || name === 'location' || name === 'companyName') {
+    // Remove leading spaces, collapse multiple spaces to one, proper-case each word
+    // "DeVANshU saINI" → "Devanshu Saini"
+    let v = value.replace(/^\s+/, '');
+    v = v.replace(/\s{2,}/g, ' ');
+    v = v.split(' ').map(word => {
+      if (!word) return '';
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }).join(' ');
+    finalValue = v;
+  }
+
+  // Collapse multiple consecutive spaces for all text fields (except email)
+  if (typeof finalValue === 'string' && name !== 'email') {
+    finalValue = finalValue.replace(/\s{2,}/g, ' ');
   }
 
   // --- Resume parsing ---
@@ -1213,7 +1436,7 @@ const handleInputChange = async (e) => {
       data.append('resume', file);
 
       try {
-        const response = await fetch('https://skillnix-backend.onrender.com/candidates/parse-logic', {
+        const response = await fetch(`${BASE_API_URL}/candidates/parse-logic`, {
           method: 'POST',
           body: data,
         });
@@ -1224,7 +1447,7 @@ const handleInputChange = async (e) => {
 
           setFormData(prev => ({
             ...prev,
-            name: result.name ? toTitleCase(result.name.trim()) : prev.name,
+            name: result.name ? result.name.trim().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') : prev.name,
             email: result.email ? result.email.toLowerCase().trim().replace(/@gnail\.con$/, '@gmail.com').replace(/@gmail\.con$/, '@gmail.com') : prev.email,
             contact: result.contact || prev.contact
           }));
@@ -1245,15 +1468,25 @@ const handleInputChange = async (e) => {
 const handleAddCandidate = async (e) => {
   e.preventDefault();
 
-  // --- Auto-trim all string fields before validation ---
+  // --- Auto-trim all string fields + collapse spaces + proper case ---
   const trimmed = {};
   Object.keys(formData).forEach(key => {
     if (typeof formData[key] === 'string') {
-      trimmed[key] = formData[key].trim();
+      trimmed[key] = formData[key].trim().replace(/\s{2,}/g, ' ');
     } else {
       trimmed[key] = formData[key];
     }
   });
+
+  // Proper-case name, spoc, location, companyName on submit
+  ['name', 'spoc', 'location', 'companyName'].forEach(field => {
+    if (trimmed[field]) {
+      trimmed[field] = trimmed[field].split(/\s+/)
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ');
+    }
+  });
+
   setFormData(prev => ({ ...prev, ...trimmed }));
 
   // --- Step-by-step validation ---
@@ -1472,13 +1705,32 @@ const handleAddCandidate = async (e) => {
   };
 
   const filteredCandidates = candidates.filter(c => {
-    const matchesSearch = !searchQuery || 
-      c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.position?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.location?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.companyName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.contact?.toLowerCase().includes(searchQuery.toLowerCase());
+    const q = searchQuery.trim().toLowerCase();
+    let matchesSearch = true;
+    if (q) {
+      if (searchScope === 'spoc') {
+        matchesSearch = (c.spoc || '').toLowerCase().includes(q);
+      } else if (searchScope === 'name') {
+        matchesSearch = (c.name || '').toLowerCase().includes(q);
+      } else if (searchScope === 'email') {
+        matchesSearch = (c.email || '').toLowerCase().includes(q);
+      } else if (searchScope === 'position') {
+        matchesSearch = (c.position || '').toLowerCase().includes(q);
+      } else if (searchScope === 'location') {
+        matchesSearch = (c.location || '').toLowerCase().includes(q);
+      } else if (searchScope === 'company') {
+        matchesSearch = (c.companyName || '').toLowerCase().includes(q);
+      } else {
+        matchesSearch =
+          (c.name || '').toLowerCase().includes(q) ||
+          (c.position || '').toLowerCase().includes(q) ||
+          (c.email || '').toLowerCase().includes(q) ||
+          (c.location || '').toLowerCase().includes(q) ||
+          (c.companyName || '').toLowerCase().includes(q) ||
+          (c.contact || '').toLowerCase().includes(q) ||
+          (c.spoc || '').toLowerCase().includes(q);
+      }
+    }
 
     // ✅ Advanced Search Filters
     const advSearch = advancedSearchFilters;
@@ -1488,9 +1740,9 @@ const handleAddCandidate = async (e) => {
       ? (c.position?.toLowerCase() === advSearch.position.toLowerCase())
       : true;
     
-    // Company filter (exact match from dropdown)
+    // Company filter (partial text match)
     const matchesAdvCompany = advSearch.companyName 
-      ? (c.companyName?.toLowerCase() === advSearch.companyName.toLowerCase())
+      ? (c.companyName?.toLowerCase().includes(advSearch.companyName.toLowerCase()) || false)
       : true;
     
     // Location filter (partial text match)
@@ -1551,17 +1803,45 @@ const handleAddCandidate = async (e) => {
     
     return matchesSearch && matchesAdvanced;
   });
-  console.log('📋 Displayed: ' + filteredCandidates.length + ' | Total in DB: ' + candidates.length + ' | Filter: ' + (showOnlyCorrect ? 'ON' : 'OFF'));
+  // Displayed/filtered candidates tracking
+
+  // Sort candidates
+  const sortedCandidates = useMemo(() => {
+    const sorted = [...filteredCandidates];
+    sorted.sort((a, b) => {
+      let valA, valB;
+      switch (sortField) {
+        case 'name': valA = (a.name || '').toLowerCase(); valB = (b.name || '').toLowerCase(); break;
+        case 'email': valA = (a.email || '').toLowerCase(); valB = (b.email || '').toLowerCase(); break;
+        case 'position': valA = (a.position || '').toLowerCase(); valB = (b.position || '').toLowerCase(); break;
+        case 'location': valA = (a.location || '').toLowerCase(); valB = (b.location || '').toLowerCase(); break;
+        case 'company': valA = (a.companyName || '').toLowerCase(); valB = (b.companyName || '').toLowerCase(); break;
+        case 'status': valA = (a.status || '').toLowerCase(); valB = (b.status || '').toLowerCase(); break;
+        case 'spoc': valA = (a.spoc || '').toLowerCase(); valB = (b.spoc || '').toLowerCase(); break;
+        case 'date':
+        default:
+          valA = a.createdAt ? new Date(a.createdAt).getTime() : (a.date ? new Date(a.date).getTime() : 0);
+          valB = b.createdAt ? new Date(b.createdAt).getTime() : (b.date ? new Date(b.date).getTime() : 0);
+          break;
+      }
+      if (typeof valA === 'string') {
+        const cmp = valA.localeCompare(valB);
+        return sortOrder === 'asc' ? cmp : -cmp;
+      }
+      return sortOrder === 'asc' ? valA - valB : valB - valA;
+    });
+    return sorted;
+  }, [filteredCandidates, sortField, sortOrder]);
 
   // Show ALL candidates (no pagination on initial load)
-  // ✅ CLIENT-SIDE PAGINATION: Show 50 records per page
+  // CLIENT-SIDE PAGINATION: Show 50 records per page
   const PAGE_SIZE = 50;
-  const totalFilteredPages = Math.ceil(filteredCandidates.length / PAGE_SIZE);
+  const totalFilteredPages = Math.ceil(sortedCandidates.length / PAGE_SIZE);
   const visibleCandidates = useMemo(() => {
     const startIdx = (currentPage - 1) * PAGE_SIZE;
     const endIdx = startIdx + PAGE_SIZE;
-    return filteredCandidates.slice(startIdx, endIdx);
-  }, [filteredCandidates, currentPage]);
+    return sortedCandidates.slice(startIdx, endIdx);
+  }, [sortedCandidates, currentPage]);
 
   const loadMoreRef = useRef(null);
   const isAutoPagingRef = useRef(false);
@@ -1584,6 +1864,7 @@ const handleAddCandidate = async (e) => {
           <button onClick={() => handleEdit(candidate)} className="p-1.5 rounded" title="Edit" style={{color: 'var(--info-main)'}} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--info-bg)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}><Edit size={16} /></button>
           <button onClick={() => handleDelete(candidate._id)} className="p-1.5 rounded" title="Delete" style={{color: 'var(--error-main)'}} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--error-bg)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}><Trash2 size={16} /></button>
           <button onClick={() => handleSendEmail(candidate)} className="p-1.5 rounded" title="Send Email" style={{color: 'var(--primary-main)'}} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--primary-lighter)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}><Mail size={16} /></button>
+          <button onClick={() => handleShareClick(candidate)} className="p-1.5 rounded" title="Share with team" style={{color: '#10b981'}} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#d1fae5'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}><Share2 size={16} /></button>
         </div>
       )
     },
@@ -1593,7 +1874,7 @@ const handleAddCandidate = async (e) => {
       label: 'Resume',
       render: (candidate) => candidate.resume ? (
         <div className="flex items-center gap-1">
-          <button onClick={() => { const url = candidate.resume.startsWith('http') ? candidate.resume : `${BASE_API_URL}${candidate.resume}`; handleResumePreview(candidate.resume); }} title="Preview Resume" className="p-1.5 rounded-lg cursor-pointer" style={{backgroundColor: 'var(--info-bg)', color: 'var(--info-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-bg)'; }}><Eye size={15} /></button>
+          {candidate.resume && <button onClick={() => handleResumePreview(candidate.resume)} title="Preview Resume" className="p-1.5 rounded-lg cursor-pointer" style={{backgroundColor: 'var(--info-bg)', color: 'var(--info-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-bg)'; }}><Eye size={15} /></button>}
           <a href={candidate.resume.startsWith('http') ? candidate.resume : `${BASE_API_URL}${candidate.resume}`} download title="Download Resume" className="p-1.5 rounded-lg" style={{backgroundColor: 'var(--success-bg)', color: 'var(--success-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-bg)'; }}><Download size={15} /></a>
         </div>
       ) : <span className="text-gray-300">—</span>
@@ -1616,7 +1897,16 @@ const handleAddCandidate = async (e) => {
     { key: 'location', label: 'Location', render: (candidate) => <span className="text-sm text-gray-700 whitespace-nowrap">{candidate.location || '—'}</span> },
     { key: 'position', label: 'Position', render: (candidate) => candidate.position ? <span className="text-sm font-semibold text-indigo-700 whitespace-nowrap">{candidate.position}</span> : <span className="text-gray-300">—</span> },
     { key: 'fls', label: 'FLS', render: (candidate) => candidate.fls ? <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${candidate.fls === 'FLS' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>{candidate.fls}</span> : <span className="text-gray-300">—</span> },
-    { key: 'name', label: 'Name', render: (candidate) => <span className="text-sm font-semibold text-gray-900 whitespace-nowrap">{candidate.name}</span> },
+    { key: 'name', label: 'Name', render: (candidate) => (
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-gray-900 whitespace-nowrap">{candidate.name}</span>
+        {candidate._isShared && (
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-600 whitespace-nowrap" title={`Shared by ${candidate._sharedByOwner || 'team member'}`}>
+            Shared
+          </span>
+        )}
+      </div>
+    )},
     { key: 'contact', label: 'Contact', render: (candidate) => <span className="text-sm font-mono text-gray-600 whitespace-nowrap">{candidate.contact || '—'}</span> },
     { key: 'email', label: 'Email', render: (candidate) => <span className="text-sm text-gray-600 whitespace-nowrap">{candidate.email || '—'}</span> },
     { key: 'companyName', label: 'Company', render: (candidate) => <span className="text-sm text-gray-700 whitespace-nowrap">{candidate.companyName || '—'}</span> },
@@ -1657,9 +1947,10 @@ const handleAddCandidate = async (e) => {
                 <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title="View remark">
                   <Info size={16} className="text-gray-400 hover:text-gray-600" />
                 </button>
-                <div className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 p-3 bg-gray-800 text-white text-xs rounded-lg shadow-xl whitespace-normal">
+                <div className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal">
+                  <div className="font-semibold text-gray-500 mb-1">Remark</div>
                   <div className="leading-relaxed">{remark}</div>
-                  <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-slate-800"></div>
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-white"></div>
                 </div>
               </div>
             )}
@@ -1673,7 +1964,16 @@ const handleAddCandidate = async (e) => {
       key: 'source',
       label: 'Source',
       render: (candidate) => candidate.source ? <span className="text-sm px-2.5 py-0.5 bg-gray-100 text-gray-600 rounded-full whitespace-nowrap">{candidate.source}</span> : <span className="text-gray-300">—</span>
-    }
+    },
+    ...(viewMode === 'shared' || candidates.some(c => c._isShared) ? [{
+      key: 'sharedBy',
+      label: 'Shared By',
+      render: (candidate) => candidate._isShared ? (
+        <span className="text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full whitespace-nowrap">
+          {candidate._sharedByOwner || 'Team'}
+        </span>
+      ) : <span className="text-gray-300">—</span>
+    }] : [])
   ];
 
   const [statusOptions, setStatusOptions] = useState(['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Rejected']);
@@ -1809,9 +2109,6 @@ const handleAddCandidate = async (e) => {
     const readyRecords = reviewData.ready; 
     const reviewRecords = reviewData.review || [];
     
-    const confirmed = window.confirm(`Import ${readyRecords.length} ready records + ${reviewRecords.length} records for review?`);
-    if (!confirmed) return;
-    
     try {
       console.log(`📤 [IMPORT] Sending ${readyRecords.length} ready + ${reviewRecords.length} review records`);
       
@@ -1936,9 +2233,28 @@ const handleAddCandidate = async (e) => {
       <div className="mb-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-gray-200">
           <div className="flex-1">
-            <h1 className="text-2xl font-bold text-gray-900 tracking-tight">All Candidates</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
+                {viewMode === 'shared' ? 'Shared With Me' : 'All Candidates'}
+              </h1>
+              <div className="flex bg-gray-100 rounded-lg p-0.5">
+                <button
+                  onClick={() => { setViewMode('all'); setSearchParams({}); }}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${viewMode === 'all' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => { setViewMode('shared'); setSearchParams({ view: 'shared' }); }}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${viewMode === 'shared' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Shared
+                </button>
+              </div>
+            </div>
             <p className="text-gray-500 text-xs mt-0.5">
               {filteredCandidates.length.toLocaleString()} records
+              {viewMode === 'shared' && <span className="text-emerald-600"> shared with you by team members</span>}
               {searchQuery && <span> matching &ldquo;{searchQuery}&rdquo;</span>}
             </p>
           </div>
@@ -2034,9 +2350,29 @@ const handleAddCandidate = async (e) => {
 
       {/* SEARCH & FILTERS BAR */}
       <div className="mb-6">
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4 focus-within:ring-2 ring-indigo-500/20 transition-all">
-          <Search className="text-gray-400" size={20} />
-          <input type="text" placeholder="Search by name, email, position or location..." className="flex-1 outline-none text-gray-700 bg-transparent" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center gap-3 focus-within:ring-2 ring-indigo-500/20 transition-all flex-wrap">
+          <Search className="text-gray-400 flex-shrink-0" size={20} />
+          <select
+            value={searchScope}
+            onChange={(e) => setSearchScope(e.target.value)}
+            className="px-3 py-2 rounded-lg text-sm border border-gray-200 bg-gray-50 text-gray-700 font-medium outline-none focus:ring-2 focus:ring-indigo-500/20"
+            title="Search in this field only"
+          >
+            <option value="all">All fields</option>
+            <option value="spoc">SPOC only</option>
+            <option value="name">Name only</option>
+            <option value="email">Email only</option>
+            <option value="position">Position only</option>
+            <option value="location">Location only</option>
+            <option value="company">Company only</option>
+          </select>
+          <input
+            type="text"
+            placeholder={searchScope === 'all' ? 'Search by name, email, position, location or SPOC...' : `Search in ${searchScope}...`}
+            className="flex-1 min-w-[200px] outline-none text-gray-700 bg-transparent"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
         </div>
 
         {/* ADVANCED SEARCH BUTTON & DOWNLOAD BUTTON */}
@@ -2051,7 +2387,41 @@ const handleAddCandidate = async (e) => {
           >
             <Filter size={16} /> {showAdvancedSearch ? 'Close Filters' : 'Advanced Search'}
           </button>
+          <button 
+            onClick={() => {
+              if (filteredCandidates.length === 0) { toast.warning('No candidates to download.'); return; }
+              setShowDownloadModal(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition border bg-green-600 text-white border-green-700 hover:bg-green-700"
+          >
+            <Download size={16} /> Download Excel {selectedIds.length > 0 ? `(${selectedIds.length})` : ''}
+          </button>
 
+          {/* Sort Controls */}
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-xs text-gray-500 font-medium">Sort by:</span>
+            <select
+              value={sortField}
+              onChange={(e) => { setSortField(e.target.value); setCurrentPage(1); }}
+              className="px-3 py-2 rounded-lg text-sm border border-gray-300 bg-white text-gray-700 font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+            >
+              <option value="date">Date Added</option>
+              <option value="name">Name</option>
+              <option value="email">Email</option>
+              <option value="position">Position</option>
+              <option value="location">Location</option>
+              <option value="company">Company</option>
+              <option value="status">Status</option>
+              <option value="spoc">SPOC</option>
+            </select>
+            <button
+              onClick={() => { setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); setCurrentPage(1); }}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-semibold transition border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+              title={sortOrder === 'asc' ? 'Ascending (A→Z, Old→New)' : 'Descending (Z→A, New→Old)'}
+            >
+              {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+            </button>
+          </div>
 
         </div>
       </div>
@@ -2099,19 +2469,16 @@ const handleAddCandidate = async (e) => {
               </select>
             </div>
 
-            {/* Company - Dropdown */}
+            {/* Company - Text Input */}
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-1.5">Company</label>
-              <select
+              <input
+                type="text"
                 value={advancedSearchFilters.companyName}
                 onChange={(e) => setAdvancedSearchFilters(prev => ({ ...prev, companyName: e.target.value }))}
-                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm bg-white"
-              >
-                <option value="">All Companies</option>
-                {masterCompanies.map(company => (
-                  <option key={company._id} value={company.name}>{company.name}</option>
-                ))}
-              </select>
+                placeholder="Search company"
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
+              />
             </div>
 
             {/* Location - Text input */}
@@ -2310,6 +2677,13 @@ const handleAddCandidate = async (e) => {
               </div>
             </div>
             <button
+              onClick={() => handleShareClick(null)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-500/80 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+              title="Share selected with team"
+            >
+              <Share2 size={15} /> Share
+            </button>
+            <button
               onClick={handleBulkDelete}
               className="flex items-center gap-1.5 px-4 py-2 bg-red-500/80 hover:bg-red-500 rounded-lg text-sm font-medium transition-colors cursor-pointer"
               title="Delete selected"
@@ -2361,10 +2735,26 @@ const handleAddCandidate = async (e) => {
             {visibleCandidates.length === 0 && !isLoadingInitial && (
               <tr>
                 <td colSpan={tableColumns.length + 1} className="text-center py-16 text-gray-400">
-                  <div className="flex flex-col items-center gap-2">
-                    <Search size={32} className="text-gray-300" />
-                    <p className="text-sm font-medium">No candidates found</p>
-                    <p className="text-xs">Try adjusting your search or filters</p>
+                  <div className="flex flex-col items-center gap-3">
+                    {viewMode === 'shared' ? (
+                      <>
+                        <Share2 size={36} className="text-gray-300" />
+                        <p className="text-sm font-medium text-gray-500">No shared candidates yet</p>
+                        <p className="text-xs text-gray-400">When team members share candidates with you, they will appear here.</p>
+                      </>
+                    ) : searchQuery ? (
+                      <>
+                        <Search size={36} className="text-gray-300" />
+                        <p className="text-sm font-medium text-gray-500">No candidates match your search</p>
+                        <p className="text-xs text-gray-400">Try different keywords or clear the search filter</p>
+                      </>
+                    ) : (
+                      <>
+                        <Briefcase size={36} className="text-gray-300" />
+                        <p className="text-sm font-medium text-gray-500">No candidates yet</p>
+                        <p className="text-xs text-gray-400">Add candidates manually or use Auto Import to bring data from Excel</p>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -2477,11 +2867,11 @@ const handleAddCandidate = async (e) => {
                       <input ref={fieldRefs.contact} type="tel" name="contact" value={formData.contact || ''} placeholder="1234567890"
                         onChange={(e) => {
                           let digitsOnly = e.target.value.replace(/\D/g, '');
-                          if (digitsOnly.length > 15) digitsOnly = digitsOnly.slice(0, 15);
+                          if (digitsOnly.length > 10) digitsOnly = digitsOnly.slice(0, 10);
                           setFormData(prev => ({ ...prev, contact: digitsOnly }));
                           if (formErrors.contact) setFormErrors(prev => ({ ...prev, contact: '' }));
                         }}
-                        className="flex-1 px-4 py-2.5 text-sm outline-none font-medium" maxLength="15" />
+                        className="flex-1 px-4 py-2.5 text-sm outline-none font-medium" maxLength="10" />
                     </div>
                     {formErrors.contact && <p className="text-xs text-red-500 mt-1 font-medium">{formErrors.contact}</p>}
                   </div>
@@ -2495,11 +2885,8 @@ const handleAddCandidate = async (e) => {
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Company</label>
-                    <select name="companyName" value={formData.companyName || ''} onChange={handleInputChange}
-                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
-                      <option value="">Select Company</option>
-                      {masterCompanies.map(company => <option key={company._id} value={company.name}>{company.name}</option>)}
-                    </select>
+                    <input type="text" name="companyName" value={formData.companyName || ''} onChange={handleInputChange} placeholder="Company Name"
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Location</label>
@@ -2612,11 +2999,7 @@ const handleAddCandidate = async (e) => {
                     <input type="date" name="callBackDate" value={formData.callBackDate || ''} onChange={handleInputChange}
                       className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
                   </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Comment</label>
-                    <input type="text" name="srNo" value={formData.srNo || ''} onChange={handleInputChange} placeholder="Optional comment"
-                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium" />
-                  </div>
+
                   <div className="md:col-span-2 lg:col-span-3">
                     <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Remark</label>
                     <textarea name="remark" value={formData.remark || ''} onChange={handleInputChange} placeholder="e.g. Rejected due to salary mismatch, Not reachable, etc."
@@ -2647,16 +3030,27 @@ const handleAddCandidate = async (e) => {
           <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] shadow-2xl flex flex-col">
             {/* Header */}
             <div className="flex justify-between items-center px-6 py-4 border-b border-gray-200 bg-gray-50/80 flex-shrink-0">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-1">
                 <div className="w-9 h-9 rounded-lg bg-indigo-100 flex items-center justify-center">
                   <Mail className="text-indigo-600" size={18} />
                 </div>
                 <div>
-                  <h2 className="text-base font-bold text-gray-900">Send Email</h2>
-                  <p className="text-xs text-gray-500">To: {emailRecipient.name} ({emailRecipient.email})</p>
+                  <h2 className="text-base font-bold text-gray-900">
+                    {bulkEmailRecipients.length > 0 ? `📧 Bulk Email (${bulkEmailRecipients.length} recipients)` : 'Send Email'}
+                  </h2>
+                  <p className="text-xs text-gray-500">
+                    {bulkEmailRecipients.length > 0 
+                      ? `To: ${bulkEmailRecipients.map(c => c.name).join(', ')}`
+                      : `To: ${emailRecipient.name} (${emailRecipient.email})`
+                    }
+                  </p>
                 </div>
               </div>
-              <button onClick={() => setShowEmailModal(false)} className="p-2 hover:bg-gray-200 rounded-lg transition">
+              <button onClick={() => {
+                setShowEmailModal(false);
+                setBulkEmailRecipients([]);
+                setSelectedIds([]);
+              }} className="p-2 hover:bg-gray-200 rounded-lg transition">
                 <X size={18} className="text-gray-500" />
               </button>
             </div>
@@ -2674,6 +3068,127 @@ const handleAddCandidate = async (e) => {
                     onClick={() => setEmailMode('quick')}
                     className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${emailMode === 'quick' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
                   >Quick Send</button>
+                </div>
+
+                {/* CC / BCC - Gmail-style Chip Autocomplete */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" onClick={e => e.stopPropagation()}>
+                  {/* CC Field */}
+                  <div className="relative">
+                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">CC (Optional)</label>
+                    <div className="min-h-[38px] flex flex-wrap items-center gap-1 px-2 py-1.5 border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500 bg-white cursor-text"
+                      onClick={() => document.getElementById('cc-input')?.focus()}>
+                      {emailCC.map((email, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 pl-2 pr-1 py-0.5 rounded-md text-[11px] font-medium max-w-[180px]">
+                          <span className="truncate">{teamMembers.find(m => m.email === email)?.name || email}</span>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); setEmailCC(prev => prev.filter((_, idx) => idx !== i)); }}
+                            className="hover:bg-indigo-200 rounded p-0.5 flex-shrink-0"><X size={10} /></button>
+                        </span>
+                      ))}
+                      <input id="cc-input" type="text" value={ccInput}
+                        onChange={(e) => { setCcInput(e.target.value); setShowCCPicker(true); setShowBCCPicker(false); }}
+                        onFocus={() => { if (ccInput || teamMembers.length > 0) setShowCCPicker(true); setShowBCCPicker(false); }}
+                        onBlur={() => setTimeout(() => setShowCCPicker(false), 200)}
+                        onKeyDown={(e) => {
+                          if ((e.key === 'Enter' || e.key === ',' || e.key === 'Tab') && ccInput.trim()) {
+                            e.preventDefault();
+                            const email = ccInput.trim().replace(/,$/, '');
+                            if (email.includes('@') && !emailCC.includes(email.toLowerCase())) {
+                              setEmailCC(prev => [...prev, email.toLowerCase()]);
+                            }
+                            setCcInput(''); setShowCCPicker(false);
+                          } else if (e.key === 'Backspace' && !ccInput && emailCC.length > 0) {
+                            setEmailCC(prev => prev.slice(0, -1));
+                          }
+                        }}
+                        placeholder={emailCC.length === 0 ? (teamMembers.length > 0 ? "Type name or email..." : "email@example.com") : ""}
+                        className="flex-1 min-w-[80px] text-sm outline-none bg-transparent py-0.5"
+                      />
+                    </div>
+                    {showCCPicker && (() => {
+                      const q = ccInput.toLowerCase();
+                      const filtered = teamMembers.filter(m =>
+                        !emailCC.includes(m.email.toLowerCase()) &&
+                        (q === '' || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q))
+                      );
+                      return filtered.length > 0 ? (
+                        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-36 overflow-y-auto">
+                          {filtered.map(m => (
+                            <button key={m._id} type="button"
+                              onMouseDown={(e) => { e.preventDefault(); setEmailCC(prev => [...prev, m.email]); setCcInput(''); setShowCCPicker(false); }}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-indigo-50 transition-colors">
+                              <div className="w-6 h-6 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
+                                <span className="text-[9px] font-bold text-indigo-700">{m.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}</span>
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-medium text-gray-800 truncate">{m.name}</p>
+                                <p className="text-[10px] text-gray-400 truncate">{m.email}</p>
+                              </div>
+                              {m.role && m.role !== 'Team Member' && <span className="text-[9px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{m.role}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+
+                  {/* BCC Field */}
+                  <div className="relative">
+                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">BCC (Optional)</label>
+                    <div className="min-h-[38px] flex flex-wrap items-center gap-1 px-2 py-1.5 border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500 bg-white cursor-text"
+                      onClick={() => document.getElementById('bcc-input')?.focus()}>
+                      {emailBCC.map((email, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 pl-2 pr-1 py-0.5 rounded-md text-[11px] font-medium max-w-[180px]">
+                          <span className="truncate">{teamMembers.find(m => m.email === email)?.name || email}</span>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); setEmailBCC(prev => prev.filter((_, idx) => idx !== i)); }}
+                            className="hover:bg-amber-200 rounded p-0.5 flex-shrink-0"><X size={10} /></button>
+                        </span>
+                      ))}
+                      <input id="bcc-input" type="text" value={bccInput}
+                        onChange={(e) => { setBccInput(e.target.value); setShowBCCPicker(true); setShowCCPicker(false); }}
+                        onFocus={() => { if (bccInput || teamMembers.length > 0) setShowBCCPicker(true); setShowCCPicker(false); }}
+                        onBlur={() => setTimeout(() => setShowBCCPicker(false), 200)}
+                        onKeyDown={(e) => {
+                          if ((e.key === 'Enter' || e.key === ',' || e.key === 'Tab') && bccInput.trim()) {
+                            e.preventDefault();
+                            const email = bccInput.trim().replace(/,$/, '');
+                            if (email.includes('@') && !emailBCC.includes(email.toLowerCase())) {
+                              setEmailBCC(prev => [...prev, email.toLowerCase()]);
+                            }
+                            setBccInput(''); setShowBCCPicker(false);
+                          } else if (e.key === 'Backspace' && !bccInput && emailBCC.length > 0) {
+                            setEmailBCC(prev => prev.slice(0, -1));
+                          }
+                        }}
+                        placeholder={emailBCC.length === 0 ? (teamMembers.length > 0 ? "Type name or email..." : "email@example.com") : ""}
+                        className="flex-1 min-w-[80px] text-sm outline-none bg-transparent py-0.5"
+                      />
+                    </div>
+                    {showBCCPicker && (() => {
+                      const q = bccInput.toLowerCase();
+                      const filtered = teamMembers.filter(m =>
+                        !emailBCC.includes(m.email.toLowerCase()) &&
+                        (q === '' || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q))
+                      );
+                      return filtered.length > 0 ? (
+                        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-36 overflow-y-auto">
+                          {filtered.map(m => (
+                            <button key={m._id} type="button"
+                              onMouseDown={(e) => { e.preventDefault(); setEmailBCC(prev => [...prev, m.email]); setBccInput(''); setShowBCCPicker(false); }}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-amber-50 transition-colors">
+                              <div className="w-6 h-6 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
+                                <span className="text-[9px] font-bold text-amber-700">{m.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}</span>
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-medium text-gray-800 truncate">{m.name}</p>
+                                <p className="text-[10px] text-gray-400 truncate">{m.email}</p>
+                              </div>
+                              {m.role && m.role !== 'Team Member' && <span className="text-[9px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{m.role}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
                 </div>
 
                 {/* ═══ TEMPLATE MODE ═══ */}
@@ -2965,30 +3480,6 @@ const handleAddCandidate = async (e) => {
                     )}
                   </>
                 )}
-
-                {/* CC / BCC (shared) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">CC (Optional)</label>
-                    <input
-                      type="text"
-                      value={emailCC}
-                      onChange={(e) => setEmailCC(e.target.value)}
-                      placeholder="email1@example.com, email2@example.com"
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-gray-500 mb-1">BCC (Optional)</label>
-                    <input
-                      type="text"
-                      value={emailBCC}
-                      onChange={(e) => setEmailBCC(e.target.value)}
-                      placeholder="email1@example.com"
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-                    />
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -3209,8 +3700,8 @@ const handleAddCandidate = async (e) => {
         </div>
       )}
 
-      {/* ===================== BULK EMAIL WORKFLOW MODAL ===================== */}
-      {bulkEmailStep && (
+      {/* ===================== BULK EMAIL WORKFLOW MODAL - DEPRECATED (use single email modal instead) ===================== */}
+      {false && bulkEmailStep && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto">
             
@@ -3891,6 +4382,69 @@ const handleAddCandidate = async (e) => {
         </div>
       )}
 
+      {/* Download Excel Confirmation Modal */}
+      {showDownloadModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowDownloadModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                <Download size={20} className="text-green-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Download Excel</h3>
+            </div>
+            <p className="text-sm text-gray-600 mb-6">
+              {selectedIds.length > 0 
+                ? `You have selected ${selectedIds.length} candidate(s). Do you want to download their data as Excel?`
+                : `No candidates selected. This will download all ${filteredCandidates.length} displayed candidate(s) as Excel.`}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowDownloadModal(false)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const toDownload = selectedIds.length > 0 
+                    ? filteredCandidates.filter(c => selectedIds.includes(c._id))
+                    : filteredCandidates;
+                  const data = toDownload.map(c => ({
+                    'Name': c.name || '',
+                    'Email': c.email || '',
+                    'Contact': c.contact || '',
+                    'Company': c.companyName || '',
+                    'Position': c.position || '',
+                    'Location': c.location || '',
+                    'Experience': c.experience || '',
+                    'Current CTC': c.ctc || '',
+                    'Expected CTC': c.expectedCtc || '',
+                    'Notice Period': c.noticePeriod || '',
+                    'Status': c.status || '',
+                    'Client': c.client || '',
+                    'SPOC': c.spoc || '',
+                    'Source': c.source || '',
+                    'FLS': c.fls || '',
+                    'Date': c.date ? new Date(c.date).toLocaleDateString('en-IN') : '',
+                    'Remark': c.remark || ''
+                  }));
+                  const ws = XLSX.utils.json_to_sheet(data);
+                  const wb = XLSX.utils.book_new();
+                  XLSX.utils.book_append_sheet(wb, ws, 'Candidates');
+                  ws['!cols'] = Object.keys(data[0]).map(key => ({ wch: Math.max(key.length, ...data.map(r => String(r[key]).length)) + 2 }));
+                  XLSX.writeFile(wb, `Candidates_${new Date().toLocaleDateString('en-IN').replace(/\//g, '-')}.xlsx`);
+                  toast.success(`Downloaded ${toDownload.length} candidate(s) to Excel`);
+                  setShowDownloadModal(false);
+                }}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-green-600 text-white hover:bg-green-700 transition flex items-center gap-2"
+              >
+                <Download size={16} /> Download {selectedIds.length > 0 ? `${selectedIds.length} Selected` : 'All'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Resume Preview Modal */}
       {previewResumeUrl && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={closeResumePreview}>
@@ -3927,6 +4481,159 @@ const handleAddCandidate = async (e) => {
                   </a>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal (reusable for delete, status, whatsapp, etc.) */}
+      <ConfirmationModal
+        isOpen={confirmModal.isOpen}
+        onClose={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        details={confirmModal.details}
+        confirmText={confirmModal.confirmText}
+        type={confirmModal.type}
+        isLoading={confirmModal.isLoading}
+      />
+
+      {/* Share Candidate Modal - Member Selection */}
+      {showShareModal && !showShareConfirmation && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setShowShareModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-gray-900">Share Candidate{selectedCandidatesForShare.length > 1 ? 's' : ''}</h3>
+              <button onClick={() => { setShowShareModal(false); setShowShareConfirmation(false); }} className="p-2 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer">
+                <X size={20} className="text-gray-600" />
+              </button>
+            </div>
+            
+            <p className="text-sm text-gray-600 mb-4">
+              {selectedCandidatesForShare.length === 1 ? (
+                <>Share <span className="font-semibold text-gray-900">{shareCandidate?.fullName || shareCandidate?.name || 'candidate'}</span> with team members</>
+              ) : (
+                <>Share <span className="font-semibold text-gray-900">{selectedCandidatesForShare.length} candidates</span> with team members</>
+              )}
+            </p>
+
+            <div className="space-y-3 max-h-64 overflow-y-auto mb-6">
+              {teamMembers && teamMembers.length > 0 ? (
+                teamMembers.map((member) => (
+                  <label key={member._id} className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={selectedShareMembers.includes(member._id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedShareMembers([...selectedShareMembers, member._id]);
+                        } else {
+                          setSelectedShareMembers(selectedShareMembers.filter(id => id !== member._id));
+                        }
+                      }}
+                      className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">{member.name}</p>
+                      <p className="text-xs text-gray-500">{member.email}</p>
+                    </div>
+                    {member.role && (
+                      <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-1 rounded whitespace-nowrap">
+                        {member.role}
+                      </span>
+                    )}
+                  </label>
+                ))
+              ) : (
+                <p className="text-sm text-gray-500 text-center py-4">No team members available</p>
+              )}
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setShowShareModal(false); setShowShareConfirmation(false); }}
+                className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleShareCandidate}
+                disabled={selectedShareMembers.length === 0}
+                className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+              >
+                <Share2 size={16} />
+                Next
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Share Confirmation Modal */}
+      {showShareConfirmation && selectedShareMembers.length > 0 && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setShowShareConfirmation(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-gray-900">Confirm Share</h3>
+              <button onClick={() => setShowShareConfirmation(false)} className="p-2 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer">
+                <X size={20} className="text-gray-600" />
+              </button>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              {/* Candidates being shared */}
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs font-semibold text-blue-900 mb-2">CANDIDATES ({selectedCandidatesForShare.length})</p>
+                <div className="space-y-2">
+                  {selectedCandidatesForShare.length === 1 && shareCandidate ? (
+                    <p className="text-sm text-blue-800">{shareCandidate.fullName || shareCandidate.name || 'Unknown'}</p>
+                  ) : (
+                    <p className="text-sm text-blue-800">{selectedCandidatesForShare.length} candidates selected</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Team members being shared with */}
+              <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                <p className="text-xs font-semibold text-green-900 mb-2">SHARING WITH ({selectedShareMembers.length})</p>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {teamMembers && teamMembers.filter(m => selectedShareMembers.includes(m._id)).map((member) => (
+                    <div key={member._id} className="text-sm text-green-800">
+                      <p className="font-medium">{member.name}</p>
+                      <p className="text-xs text-green-700">{member.email}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500">Once shared, team members can view and interact with these candidates. This action cannot be undone.</p>
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowShareConfirmation(false)}
+                className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleShareCandidate}
+                disabled={isSharingCandidate}
+                className="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+              >
+                {isSharingCandidate ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" />
+                    Sharing...
+                  </>
+                ) : (
+                  <>
+                    <Share2 size={16} />
+                    Confirm Share
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

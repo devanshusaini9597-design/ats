@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { Menu, X, BarChart3, Users, Briefcase, FileText, Settings, LogOut, Home, ChevronDown, ChevronLeft, Upload, Plus, Trash2, Search, Mail } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { handleLogout } from '../utils/authUtils';
@@ -26,8 +26,8 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
         { label: 'All Candidates', action: () => { navigate('/ats'); if (isOpen) setIsOpen(false); }, icon: Users },
         { label: 'Add a Candidate', action: () => { navigate('/add-candidate'); if (isOpen) setIsOpen(false); }, icon: Plus },
         { label: 'Resume Parsing', action: () => { navigate('/resume-parsing'); if (isOpen) setIsOpen(false); }, icon: FileText },
-        { label: 'Auto Import', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: Upload },
-        { label: 'Pending Review', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); }, icon: FileText }
+        { label: 'Auto Import', action: () => { navigate('/auto-import'); if (isOpen) setIsOpen(false); }, icon: Upload },
+        { label: 'Pending Review', action: () => { navigate('/pending-review'); if (isOpen) setIsOpen(false); }, icon: FileText }
       ]
     },
     {
@@ -36,7 +36,6 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
       type: 'submenu',
       submenu: [
         { label: 'Manage Positions', action: () => { navigate('/manage-positions'); if (isOpen) setIsOpen(false); }, icon: Briefcase },
-        { label: 'Manage Company', action: () => { navigate('/manage-company'); if (isOpen) setIsOpen(false); }, icon: Briefcase },
         { label: 'Manage Clients', action: () => { navigate('/manage-clients'); if (isOpen) setIsOpen(false); }, icon: Users },
         { label: 'Manage Sources', action: () => { navigate('/manage-sources'); if (isOpen) setIsOpen(false); }, icon: FileText }
       ]
@@ -60,7 +59,7 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
         { label: 'Export', action: () => { navigate('/analytics?tab=export'); if (isOpen) setIsOpen(false); }, icon: FileText }
       ]
     },
-    { icon: Users, label: 'Team', type: 'link', action: () => { toast.info('Feature Coming Soon'); navigate('/dashboard'); if (isOpen) setIsOpen(false); } },
+    { icon: Users, label: 'Team', type: 'link', action: () => { navigate('/team'); if (isOpen) setIsOpen(false); } },
   ];
 
   const toggleMenu = (label) => {
@@ -205,7 +204,7 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
           <div className="border-t border-gray-200 p-3 space-y-2">
             <button 
               onClick={() => {
-                toast.info('Feature Coming Soon');
+                navigate('/auto-import');
                 if (isOpen) setIsOpen(false);
               }}
               className="w-full flex items-center gap-2 px-3 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-sm font-medium cursor-pointer"
@@ -216,14 +215,14 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
             </button>
             <button 
               onClick={() => {
-                toast.info('Feature Coming Soon');
+                navigate('/add-candidate');
                 if (isOpen) setIsOpen(false);
               }}
               className="w-full flex items-center gap-2 px-3 py-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors text-sm font-medium cursor-pointer"
-              title="Add Person"
+              title="Add Candidate"
             >
               <Plus size={16} />
-              Add Person
+              Add Candidate
             </button>
           </div>
         )}
@@ -231,7 +230,7 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
         {/* Bottom Section */}
         <div className={`border-t border-gray-200 p-2 space-y-1 ${collapsed ? 'hidden lg:block' : ''}`}>
           <button 
-            onClick={() => { toast.info('Feature Coming Soon'); }}
+            onClick={() => { navigate('/settings'); if (isOpen) setIsOpen(false); }}
             className="w-full flex items-center gap-3 px-3 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
             title="Settings"
           >

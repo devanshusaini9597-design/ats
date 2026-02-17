@@ -1,4 +1,5 @@
 const Job = require('../models/Job');
+const { normalizeText } = require('../utils/textNormalize');
 
 // 1. Create a New Job
 exports.createJob = async (req, res) => {
@@ -6,13 +7,13 @@ exports.createJob = async (req, res) => {
         const { role, location, ctc, experience, skills, description, hiringManagers, isTemplate } = req.body;
 
         const newJob = new Job({
-            role,
-            location,
+            role: normalizeText(role),
+            location: normalizeText(location),
             ctc,
             experience,
             skills,
             description,
-            hiringManagers, // Array of emails/IDs
+            hiringManagers,
             isTemplate: isTemplate || false
         });
 

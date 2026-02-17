@@ -1,7 +1,5 @@
 const Client = require('../models/Client');
-
-// Auto Title Case: "hr admin" → "Hr Admin"
-const toTitleCase = (str) => str.trim().replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+const { normalizeText } = require('../utils/textNormalize');
 
 // Get all clients (user's own)
 const getClients = async (req, res) => {
@@ -29,7 +27,7 @@ const createClient = async (req, res) => {
     }
 
     const client = new Client({
-      name: toTitleCase(name),
+      name: normalizeText(name),
       description: description?.trim(),
       createdBy: req.user.id
     });
@@ -62,7 +60,7 @@ const updateClient = async (req, res) => {
       if (existingClient) {
         return res.status(400).json({ message: 'Client name already exists' });
       }
-      client.name = toTitleCase(name);
+      client.name = normalizeText(name);
     }
 
     if (description !== undefined) {

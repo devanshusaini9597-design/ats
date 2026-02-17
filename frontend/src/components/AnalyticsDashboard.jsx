@@ -2,9 +2,11 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } from 'recharts';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
-import { TrendingUp, TrendingDown, Users, CheckCircle, AlertCircle, Award, Download, FileText, Calendar, Briefcase, MapPin, Target, BarChart3, Clock, ArrowUpRight, RefreshCw, FileSpreadsheet, ClipboardList, Building2, GitBranch, Filter, Eye, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, Users, CheckCircle, AlertCircle, Award, Download, Share2, FileText, Calendar, Briefcase, MapPin, Target, BarChart3, Clock, ArrowUpRight, RefreshCw, FileSpreadsheet, ClipboardList, Building2, GitBranch, Filter, Eye, X, Send, Mail } from 'lucide-react';
 import Layout from './Layout';
 import { useSearchParams } from 'react-router-dom';
+import BASE_API_URL from '../config';
+import { useToast } from './Toast';
 
 const PIPELINE_COLORS = {
   Applied: '#3b82f6', Screening: '#f59e0b', Interview: '#8b5cf6',
@@ -14,6 +16,7 @@ const PIPELINE_COLORS = {
 const PIE_COLORS = ['#4f46e5', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6b7280'];
 
 const AnalyticsDashboard = () => {
+  const toast = useToast();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -33,11 +36,41 @@ const AnalyticsDashboard = () => {
   const [previewData, setPreviewData] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [filteredCandidateCount, setFilteredCandidateCount] = useState(null);
+
+  // Share report state
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [selectedMembers, setSelectedMembers] = useState([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const [isSharingReport, setIsSharingReport] = useState(false);
+  const [shareMessage, setShareMessage] = useState('');
+
+  // Fetch filtered candidate count when date range or report type changes
+  useEffect(() => {
+    const fetchFilteredCount = async () => {
+      if (activeTab !== 'export') return;
+      try {
+        const response = await fetch(`${BASE_API_URL}/api/export/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          body: JSON.stringify({ reportType: 'recruitment-summary', dateRange, customFrom, customTo })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const total = data.summary?.find(s => s.label === 'Total')?.value || 0;
+          setFilteredCandidateCount(total);
+        }
+      } catch (err) { console.error('Count fetch error:', err); }
+    };
+    if (dateRange === 'custom' && (!customFrom || !customTo)) return;
+    fetchFilteredCount();
+  }, [dateRange, customFrom, customTo, activeTab]);
 
   const fetchStats = async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
     try {
-      const response = await authenticatedFetch('https://skillnix-backend.onrender.com/api/analytics/dashboard-stats');
+      const response = await authenticatedFetch(`${BASE_API_URL}/api/analytics/dashboard-stats`);
       if (isUnauthorized(response)) { handleUnauthorized(); return; }
       const data = await response.json();
       setStats(data);
@@ -68,7 +101,7 @@ const AnalyticsDashboard = () => {
     setIsExporting(true);
     setExportSuccess(false);
     try {
-      const response = await fetch('https://skillnix-backend.onrender.com/api/export/report', {
+      const response = await fetch(`${BASE_API_URL}/api/export/report`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify({ reportType, format: exportFormat, dateRange, customFrom, customTo })
@@ -103,7 +136,7 @@ const AnalyticsDashboard = () => {
   const handlePreview = async () => {
     setPreviewLoading(true);
     try {
-      const response = await fetch('https://skillnix-backend.onrender.com/api/export/preview', {
+      const response = await fetch(`${BASE_API_URL}/api/export/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify({ reportType, dateRange, customFrom, customTo })
@@ -117,6 +150,72 @@ const AnalyticsDashboard = () => {
       }
     } catch (err) { console.error('Preview error:', err); alert('Preview error. Please try again.'); }
     finally { setPreviewLoading(false); }
+  };
+
+  // Fetch team members for sharing
+  const fetchTeamMembers = async () => {
+    setIsLoadingMembers(true);
+    try {
+      const response = await authenticatedFetch(`${BASE_API_URL}/api/team`);
+      if (isUnauthorized(response)) { handleUnauthorized(); return; }
+      const data = await response.json();
+      if (data.success) {
+        setTeamMembers(data.members || []);
+      } else {
+        toast.error('Failed to load team members');
+      }
+    } catch (err) {
+      console.error('Error fetching team members:', err);
+      toast.error('Error loading team members');
+    } finally {
+      setIsLoadingMembers(false);
+    }
+  };
+
+  // Handle sharing report with team members
+  const handleShareReport = async () => {
+    if (selectedMembers.length === 0) {
+      toast.warning('Please select at least one team member');
+      return;
+    }
+
+    setIsSharingReport(true);
+    try {
+      const response = await authenticatedFetch(`${BASE_API_URL}/api/export/share-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType,
+          dateRange,
+          customFrom,
+          customTo,
+          selectedMembers: selectedMembers.map(m => m._id),
+          message: shareMessage
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success(`Report shared with ${selectedMembers.length} team member(s)`);
+        setShowShareModal(false);
+        setSelectedMembers([]);
+        setShareMessage('');
+      } else {
+        toast.error(data.message || 'Failed to share report');
+      }
+    } catch (err) {
+      console.error('Share error:', err);
+      toast.error('Error sharing report');
+    } finally {
+      setIsSharingReport(false);
+    }
+  };
+
+  const openShareModal = async () => {
+    setShowShareModal(true);
+    if (teamMembers.length === 0) {
+      await fetchTeamMembers();
+    }
   };
 
   if (loading) {
@@ -688,7 +787,7 @@ const AnalyticsDashboard = () => {
                     <div className="border-t border-gray-100 pt-3">
                       <div className="flex justify-between items-center text-sm">
                         <span className="text-gray-500">Total Candidates</span>
-                        <span className="font-bold text-indigo-600">{stats?.totalCandidates?.toLocaleString() || 0}</span>
+                        <span className="font-bold text-indigo-600">{(filteredCandidateCount !== null ? filteredCandidateCount : stats?.totalCandidates)?.toLocaleString() || 0}</span>
                       </div>
                     </div>
                   </div>
@@ -713,23 +812,34 @@ const AnalyticsDashboard = () => {
                     </button>
                   </div>
 
-                  <button
-                    onClick={handleExport}
-                    disabled={isExporting || (dateRange === 'custom' && (!customFrom || !customTo))}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isExporting ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                        Generating Report...
-                      </>
-                    ) : (
-                      <>
-                        <Download size={18} />
-                        Export Report
-                      </>
-                    )}
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleExport}
+                      disabled={isExporting || (dateRange === 'custom' && (!customFrom || !customTo))}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                    >
+                      {isExporting ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                          Exporting...
+                        </>
+                      ) : (
+                        <>
+                          <Download size={16} />
+                          Export
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={openShareModal}
+                      disabled={dateRange === 'custom' && (!customFrom || !customTo)}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                    >
+                      <Share2 size={16} />
+                      Share
+                    </button>
+                  </div>
 
                   {dateRange === 'custom' && (!customFrom || !customTo) && (
                     <p className="text-[11px] text-amber-600 font-medium mt-2 text-center">Please select both From and To dates</p>
@@ -815,6 +925,115 @@ const AnalyticsDashboard = () => {
             <div className="px-6 py-3 border-t border-gray-200 bg-gray-50/80 flex items-center justify-between flex-shrink-0">
               <p className="text-[11px] text-gray-400">Confidential — SkillNix PCHR</p>
               <button onClick={() => setShowPreview(false)} className="text-sm text-gray-500 hover:text-gray-700 font-medium">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════ SHARE REPORT MODAL ═══════════════ */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50/80 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center">
+                  <Share2 size={18} className="text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">Share Report</h3>
+                  <p className="text-xs text-gray-500">Send report to team members</p>
+                </div>
+              </div>
+              <button onClick={() => setShowShareModal(false)} className="p-2 hover:bg-gray-200 rounded-lg transition-colors">
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="overflow-y-auto flex-1 p-6 space-y-5">
+              {/* Team Members Selection */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-3">Select Team Members</label>
+                {isLoadingMembers ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin rounded-full h-6 w-6 border-2 border-emerald-500 border-t-transparent"></div>
+                  </div>
+                ) : teamMembers.length === 0 ? (
+                  <p className="text-sm text-gray-500 py-4 text-center">No team members found</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50">
+                    {teamMembers.map((member) => (
+                      <label key={member._id} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-white cursor-pointer transition">
+                        <input
+                          type="checkbox"
+                          checked={selectedMembers.some(m => m._id === member._id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedMembers([...selectedMembers, member]);
+                            } else {
+                              setSelectedMembers(selectedMembers.filter(m => m._id !== member._id));
+                            }
+                          }}
+                          className="w-4 h-4 text-emerald-600 rounded focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{member.name}</p>
+                          <p className="text-xs text-gray-500 truncate">{member.email}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Message */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Message (Optional)</label>
+                <textarea
+                  value={shareMessage}
+                  onChange={(e) => setShareMessage(e.target.value)}
+                  placeholder="Add a message for the recipients..."
+                  rows="3"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-sm resize-none"
+                />
+              </div>
+
+              {/* Selected Members Count */}
+              {selectedMembers.length > 0 && (
+                <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg">
+                  <p className="text-xs font-semibold text-emerald-700">
+                    {selectedMembers.length === 1 ? '1 team member' : `${selectedMembers.length} team members`} selected
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50/80 flex-shrink-0">
+              <button
+                onClick={() => setShowShareModal(false)}
+                className="px-4 py-2.5 text-sm font-semibold text-gray-600 hover:bg-gray-200 rounded-lg transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleShareReport}
+                disabled={isSharingReport || selectedMembers.length === 0}
+                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSharingReport ? (
+                  <>
+                    <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                    Sharing...
+                  </>
+                ) : (
+                  <>
+                    <Send size={16} />
+                    Share Report
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

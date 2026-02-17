@@ -407,3 +407,62 @@ exports.exportReport = async (req, res) => {
     res.end();
   } catch (err) { console.error('Export error:', err); res.status(500).json({ message: 'Export failed', error: err.message }); }
 };
+
+// Share report with team members
+exports.shareReport = async (req, res) => {
+  try {
+    const { reportType, dateRange, customFrom, customTo, selectedMembers, message } = req.body;
+    const userId = req.user.id;
+
+    if (!selectedMembers || selectedMembers.length === 0) {
+      return res.status(400).json({ success: false, message: 'No team members selected' });
+    }
+
+    const User = mongoose.model('User');
+    const Notification = mongoose.model('Notification');
+    const TeamMember = mongoose.model('TeamMember');
+
+    const sender = await User.findById(userId).select('name email').lean();
+    if (!sender) return res.status(404).json({ success: false, message: 'Sender not found' });
+
+    // Build date filter and get candidate count for the report
+    const dateFilter = buildDateFilter(dateRange, customFrom, customTo);
+    const candidateFilter = { createdBy: userId };
+    if (dateFilter) candidateFilter.createdAt = dateFilter;
+    const candidateCount = await Candidate.countDocuments(candidateFilter);
+
+    const reportLabel = reportType === 'summary' ? 'Summary Report' : reportType === 'detailed' ? 'Detailed Report' : 'Analytics Report';
+    const dateLabel = dateRange === 'custom' ? `${customFrom} to ${customTo}` : dateRange;
+
+    // Create notifications for each selected member
+    const notifications = [];
+    for (const memberId of selectedMembers) {
+      const member = await TeamMember.findById(memberId).lean();
+      if (!member) continue;
+
+      // Find the recipient user by their email
+      const recipientUser = await User.findOne({ email: member.email.toLowerCase() }).select('_id').lean();
+      if (!recipientUser) continue;
+
+      notifications.push({
+        userId: recipientUser._id,
+        senderId: userId,
+        senderName: sender.name || sender.email,
+        type: 'system',
+        title: `Report Shared: ${reportLabel}`,
+        message: `${sender.name || sender.email} shared a ${reportLabel} with you (${dateLabel}, ${candidateCount} candidates).${message ? ` Message: "${message}"` : ''}`,
+        priority: 'medium',
+        isRead: false
+      });
+    }
+
+    if (notifications.length > 0) {
+      await Notification.insertMany(notifications);
+    }
+
+    res.json({ success: true, message: `Report shared with ${notifications.length} team member(s)` });
+  } catch (err) {
+    console.error('Share report error:', err);
+    res.status(500).json({ success: false, message: 'Failed to share report' });
+  }
+};

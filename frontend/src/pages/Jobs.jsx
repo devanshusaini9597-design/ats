@@ -2,9 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, MapPin, BookOpen, UserCheck, X, Briefcase, IndianRupee } from 'lucide-react';
 import JDLibraryModal from '../components/JDLibraryModal';
+import BASE_API_URL from '../config';
 
 const Jobs = () => {
-  const API_URL = 'https://skillnix-backend.onrender.com/jobs';
+  const API_URL = `${BASE_API_URL}/jobs`;
   const [jobs, setJobs] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);

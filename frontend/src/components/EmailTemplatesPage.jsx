@@ -3,6 +3,7 @@ import { Mail, Plus, Edit3, Trash2, Eye, Copy, Search, X, Save, FileText, Send, 
 import Layout from './Layout';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
+import { formatByFieldName } from '../utils/textFormatter';
 
 import API_URL from '../config';
 const BASE = API_URL;
@@ -394,12 +395,12 @@ const EmailTemplatesPage = () => {
             <div className="overflow-y-auto flex-1 p-6 space-y-5">
               {/* Row 1: Name + Category */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
+              <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1.5">Template Name *</label>
                   <input
                     type="text"
                     value={form.name}
-                    onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
+                    onChange={(e) => setForm(prev => ({ ...prev, name: formatByFieldName('templateName', e.target.value) }))}
                     placeholder="e.g. Hiring Drive Invitation"
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                   />

@@ -69,11 +69,11 @@ const Header = ({ setSidebarOpen, sidebarOpen }) => {
                   <p className="text-xs text-gray-500">{userEmail}</p>
                 </div>
                 <div className="py-1">
-                  <button onClick={() => { toast.info('Feature Coming Soon'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors cursor-pointer">
+                  <button onClick={() => { navigate('/settings'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors cursor-pointer">
                     <User size={16} />
                     My Profile
                   </button>
-                  <button onClick={() => { toast.info('Feature Coming Soon'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors cursor-pointer">
+                  <button onClick={() => { navigate('/settings'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors cursor-pointer">
                     <span>⚙️</span>
                     Settings
                   </button>

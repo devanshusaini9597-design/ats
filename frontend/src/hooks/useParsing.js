@@ -1,5 +1,6 @@
 // src/hooks/useParsing.js
 import { useState } from 'react';
+import BASE_API_URL from '../config';
 export const useParsing = (fetchCandidates) => {
     const [selectedIds, setSelectedIds] = useState([]);
     const [isParsing, setIsParsing] = useState(false);
@@ -26,7 +27,7 @@ export const useParsing = (fetchCandidates) => {
         
         setIsParsing(true);
         try {
-            const res = await fetch('https://skillnix-backend.onrender.com/candidates/bulk-parse', {
+            const res = await fetch(`${BASE_API_URL}/candidates/bulk-parse`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ids: selectedIds }),
