@@ -235,6 +235,7 @@ const ATS = forwardRef((props, ref) => {
       if (search) params.append('search', search);
       if (position) params.append('position', position);
 
+      console.log('📤 Fetching candidates from:', `${API_URL}?${params.toString()}`);
       const res = await authenticatedFetch(`${API_URL}?${params.toString()}`, { cache: 'no-store' });
       
       if (isUnauthorized(res)) {
@@ -242,40 +243,66 @@ const ATS = forwardRef((props, ref) => {
         return;
       }
       
-      const response = await res.json();
+      let response;
+      try {
+        response = await res.json();
+      } catch (parseErr) {
+        console.error('❌ Failed to parse JSON response:', parseErr);
+        toast.error('Invalid response from server');
+        setCandidates([]);
+        return;
+      }
+      
+      console.log('🔍 HTTP Status:', res.status, 'OK:', res.ok);
       console.log('🔍 API Response - isSearch:', isSearch, 'limit:', limit, 'page:', page);
-      console.log('🔍 API Response received:', response);
-      console.log('🔍 response.success:', response?.success, 'response.data length:', response?.data?.length ?? (Array.isArray(response?.data) ? 0 : 'not-array'));
+      console.log('🔍 API Response:', response);
+      console.log('🔍 response.success:', response?.success, 'response.data type:', Array.isArray(response?.data) ? `array[${response.data.length}]` : typeof response?.data);
       
       // Handle both paginated and raw array formats
       let candidatesData = [];
       let pages = 1;
       
-      if (response && response.success === true && Array.isArray(response.data)) {
-        // API returned success response with pagination
+      // Check HTTP status first
+      if (!res.ok) {
+        console.error('❌ HTTP Error:', res.status, response?.message || response?.error);
+        toast.error(response?.message || `Server error (${res.status})`);
+      } 
+      // Format 1: Success response with pagination
+      else if (response?.success === true && Array.isArray(response?.data)) {
         candidatesData = response.data;
         pages = response.pagination?.totalPages || 1;
         const total = response.pagination?.totalCount ?? candidatesData.length;
         setTotalPages(pages);
         setTotalRecordsInDB(total);
-        console.log('✅ Candidates loaded:', candidatesData.length, 'Total:', total);
-      } else if (Array.isArray(response)) {
-        // API returned raw array (legacy format)
+        console.log('✅ Candidates loaded (paginated):', candidatesData.length, 'Total:', total);
+      } 
+      // Format 2: Response with data property (success may be undefined)
+      else if (response && Array.isArray(response.data)) {
+        candidatesData = response.data;
+        pages = response.pagination?.totalPages || 1;
+        const total = response.pagination?.totalCount ?? candidatesData.length;
+        setTotalPages(pages);
+        setTotalRecordsInDB(total);
+        console.log('✅ Candidates loaded (data property):', candidatesData.length, 'Total:', total);
+      }
+      // Format 3: Raw array response (legacy)
+      else if (Array.isArray(response)) {
         candidatesData = response;
         setTotalPages(1);
         setTotalRecordsInDB(candidatesData.length);
-        console.log('✅ Candidates loaded (legacy):', candidatesData.length);
-      } else if (!res.ok) {
-        // HTTP error
-        toast.error(response?.message || 'Failed to load candidates. Please try again.');
-        console.error('❌ API Error:', response);
-      } else if (response && response.success === false) {
-        // API returned error response
-        toast.error(response.message || 'Server returned an error. Please try again.');
-        console.error('❌ API returned error:', response.message);
-      } else {
-        // Unexpected response format
-        console.error('❌ Unexpected response format:', response);
+        console.log('✅ Candidates loaded (raw array):', candidatesData.length);
+      }
+      // Format 4: Error response
+      else if (response?.success === false) {
+        console.error('❌ API Error:', response.message);
+        toast.error(response.message || 'Server error');
+      }
+      // Format 5: Empty or unexpected
+      else {
+        console.warn('⚠️ Unexpected format - treating as empty result:', response);
+        candidatesData = [];
+        setTotalPages(1);
+        setTotalRecordsInDB(0);
       }
       
       if (page === 1) {

@@ -133,51 +133,61 @@ router.get('/', async (req, res) => {
         if (!userIdRaw) {
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
-        const userIdStr = String(userIdRaw);
-        const userIdObj = mongoose.Types.ObjectId.isValid(userIdStr) ? new mongoose.Types.ObjectId(userIdStr) : null;
-        // Query with ObjectId so DB documents (createdBy stored as ObjectId) match reliably
-        const createdByMatch = userIdObj
-            ? { $in: [userIdObj, userIdStr] }
-            : userIdStr;
+        const userIdStr = String(userIdRaw).trim();
+        const userIdObj = (userIdStr.length === 24 && /^[a-fA-F0-9]+$/.test(userIdStr))
+            ? new mongoose.Types.ObjectId(userIdStr)
+            : null;
+
+        // Own + shared filter: match both ObjectId and string so we never miss (DB can store either)
+        const createdByClause = userIdObj
+            ? { createdBy: { $in: [userIdObj, userIdStr] } }
+            : { createdBy: userIdStr };
+        const sharedClause = userIdObj
+            ? { 'sharedWith.userId': { $in: [userIdObj, userIdStr] } }
+            : { 'sharedWith.userId': userIdStr };
+
         let filter;
         if (viewMode === 'shared') {
-            filter = { 'sharedWith.userId': userIdObj ? { $in: [userIdObj, userIdStr] } : userIdStr };
+            filter = sharedClause;
         } else {
-            filter = {
-                $or: [
-                    { createdBy: createdByMatch },
-                    { 'sharedWith.userId': userIdObj ? { $in: [userIdObj, userIdStr] } : userIdStr }
-                ]
-            };
+            filter = { $or: [createdByClause, sharedClause] };
         }
 
-        // Fetch candidates - if ANY filter is active, get ALL candidates without pagination limit
-        let candidatesQuery = Candidate.find(filter)
-            .sort({ createdAt: -1 })
-            .lean();
-
+        // Fetch candidates
+        let candidatesQuery = Candidate.find(filter).sort({ createdAt: -1 }).lean();
         if (shouldPaginate && !hasAnyFilter) {
-            // Only use pagination at DB level if NO filters are active
             candidatesQuery = candidatesQuery.limit(limit).skip(skip);
         }
-
         let candidates = await candidatesQuery;
+
         let usedOrphanFallback = false;
         let orphanCountForTotal = 0;
 
-        // Fallback: if no candidates found and we're on "all" view, include legacy/orphan records (no createdBy) so list is not empty
+        let usedStringFallback = false;
+        // Fallback 1: if 0 from main query, try createdBy as string only (some DBs store string)
+        if (candidates.length === 0 && viewMode !== 'shared') {
+            const stringFilter = { createdBy: userIdStr };
+            const stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
+            candidates = shouldPaginate && !hasAnyFilter
+                ? await stringQuery.limit(limit).skip(skip)
+                : await stringQuery;
+            if (candidates.length > 0) {
+                usedStringFallback = true;
+                console.log(`📊 Backend Query - matched ${candidates.length} by createdBy string`);
+            }
+        }
+
+        // Fallback 2: if still 0, include orphan/legacy records (no createdBy)
         if (candidates.length === 0 && viewMode !== 'shared') {
             const orphanFilter = { $or: [{ createdBy: { $exists: false } }, { createdBy: null }] };
             orphanCountForTotal = await Candidate.countDocuments(orphanFilter);
             if (orphanCountForTotal > 0) {
                 usedOrphanFallback = true;
                 const orphanQuery = Candidate.find(orphanFilter).sort({ createdAt: -1 }).lean();
-                if (shouldPaginate && !hasAnyFilter) {
-                    candidates = await orphanQuery.limit(limit).skip(skip);
-                } else {
-                    candidates = await orphanQuery;
-                }
-                console.log(`📊 Backend Query - using ${candidates.length} orphan/legacy candidates (no createdBy)`);
+                candidates = shouldPaginate && !hasAnyFilter
+                    ? await orphanQuery.limit(limit).skip(skip)
+                    : await orphanQuery;
+                console.log(`📊 Backend Query - using ${candidates.length} orphan/legacy candidates`);
             }
         }
 
@@ -305,12 +315,14 @@ router.get('/', async (req, res) => {
             })
             : candidates;
 
-        // Get total count for pagination metadata (when we used orphan fallback, use orphan total)
+        // Get total count for pagination metadata
         const totalCount = hasAnyFilter
             ? finalCandidates.length
-            : usedOrphanFallback
-                ? orphanCountForTotal
-                : await Candidate.countDocuments(filter);
+            : usedStringFallback
+                ? await Candidate.countDocuments({ createdBy: userIdStr })
+                : usedOrphanFallback
+                    ? orphanCountForTotal
+                    : await Candidate.countDocuments(filter);
         const totalPages = shouldPaginate ? Math.ceil(totalCount / limit) : 1;
 
         // Apply pagination to final candidates if ANY filter was used
@@ -334,7 +346,12 @@ router.get('/', async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ message: "Error fetching candidates", error: err.message });
+        console.error('❌ Error fetching candidates:', err.message, err.stack);
+        res.status(500).json({ 
+            success: false,
+            message: "Error fetching candidates", 
+            error: err.message 
+        });
     }
 });
 
