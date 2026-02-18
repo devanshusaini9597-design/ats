@@ -29,6 +29,20 @@ export const normalizeWhitespace = (text) => {
 };
 
 /**
+ * Format name/title fields for live input (onChange) without trimming.
+ * Allows spaces so user can type "Head Of India". Applies: single space only, first letter of each word capitalized.
+ * Use this for name inputs in Manage Positions, Manage Clients, Manage Sources (add/edit).
+ */
+export const formatNameForInput = (value) => {
+  if (value == null || typeof value !== 'string') return '';
+  const singleSpace = value.replace(/\s{2,}/g, ' ');
+  return singleSpace
+    .split(' ')
+    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : ''))
+    .join(' ');
+};
+
+/**
  * Format text field (trim + single spaces, optionally capitalize)
  * @param {string} text - Input text
  * @param {boolean} capitalize - Whether to capitalize first letter of each word
@@ -174,6 +188,7 @@ export default {
   normalizeWhitespace,
   formatTextField,
   formatByFieldName,
+  formatNameForInput,
   formatEmail,
   formatPhoneNumber,
   formatPassword,

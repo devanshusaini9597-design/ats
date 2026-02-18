@@ -16,6 +16,7 @@ import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
+import { ctcRanges, ctcLpaBreakpoints, noticePeriodOptions } from '../utils/ctcRanges';
 
 
 const ATS = forwardRef((props, ref) => {
@@ -170,7 +171,6 @@ const ATS = forwardRef((props, ref) => {
   const [masterSources, setMasterSources] = useState([]);
   const [countryCode, setCountryCode] = useState('+91');
   const countryCodes = useCountries();
-  const ctcRanges = ['0-50k', '50k-1L', '1L-1.5L', '1.5L-2L', '2L-2.5L', '2.5L-3L', '3L-3.5L', '3.5L-4L', '4L-4.5L', '4.5L-5L', '5L-5.5L', '5.5L-6L', '6L-8L', '8L-9L', '9L-10L', 'Above 10L'];
 
   // Fetch master data for modal dropdowns
   useEffect(() => {
@@ -1811,15 +1811,12 @@ const handleAddCandidate = async (e) => {
       const str = String(val).toUpperCase().trim();
       const num = parseFloat(str.replace(/[^0-9.]/g, ''));
       if (isNaN(num)) return -1;
-      // Convert to LPA value
       let lpa = num;
       if (str.includes('K')) lpa = num / 100; // 50K = 0.5 LPA
-      // Map LPA to the closest range index
-      const lpaBreakpoints = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 8, 9, 10, 999];
-      for (let i = 0; i < lpaBreakpoints.length - 1; i++) {
-        if (lpa <= lpaBreakpoints[i + 1]) return i;
+      for (let i = 0; i < ctcLpaBreakpoints.length - 1; i++) {
+        if (lpa <= ctcLpaBreakpoints[i + 1]) return i;
       }
-      return ctcRanges.length - 1; // Above 10L
+      return ctcRanges.length - 1; // Above 50L
     };
     
     const candidateCTCRank = getCTCRank(c.ctc);
@@ -2977,7 +2974,7 @@ const handleAddCandidate = async (e) => {
                   <div>
                     <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Current CTC (LPA) <span className="text-red-500">*</span></label>
                     <select ref={fieldRefs.ctc} name="ctc" value={formData.ctc || ''} onChange={handleInputChange}
-                      className={`w-full px-4 py-2.5 border-2 rounded-lg focus:ring-2 focus:outline-none transition-all text-sm font-medium ${formErrors.ctc ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-100'}`}>
+                      className={`w-full px-4 py-2.5 border-2 rounded-lg focus:ring-2 focus:outline-none transition-all text-sm font-medium max-h-52 ${formErrors.ctc ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-100'}`}>
                       <option value="">Select CTC</option>
                       {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
                     </select>
@@ -2986,7 +2983,7 @@ const handleAddCandidate = async (e) => {
                   <div>
                     <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2.5">Expected CTC (LPA)</label>
                     <select name="expectedCtc" value={formData.expectedCtc || ''} onChange={handleInputChange}
-                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
+                      className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium max-h-52">
                       <option value="">Select Expected CTC</option>
                       {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
                     </select>
@@ -2996,10 +2993,7 @@ const handleAddCandidate = async (e) => {
                     <select name="noticePeriod" value={formData.noticePeriod || ''} onChange={handleInputChange}
                       className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
                       <option value="">Select Notice Period</option>
-                      <option value="Immediate">Immediate</option>
-                      <option value="30 days">30 days</option>
-                      <option value="60 days">60 days</option>
-                      <option value="90 days">90 days</option>
+                      {noticePeriodOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                     </select>
                   </div>
                   <div>

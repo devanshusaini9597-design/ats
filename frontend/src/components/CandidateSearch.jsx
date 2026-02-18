@@ -3,25 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Search, ArrowLeft, RefreshCw } from 'lucide-react';
 import API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
-
-const CTC_OPTIONS = [
-  '0-50k',
-  '50k-1L',
-  '1L-1.5L',
-  '1.5L-2L',
-  '2L-2.5L',
-  '2.5L-3L',
-  '3L-3.5L',
-  '3.5L-4L',
-  '4L-4.5L',
-  '4.5L-5L',
-  '5L-5.5L',
-  '5.5L-6L',
-  '6L-8L',
-  '8L-9L',
-  '9L-10L',
-  'Above 10L'
-];
+import { ctcRanges } from '../utils/ctcRanges';
 
 const CandidateSearch = () => {
   const navigate = useNavigate();
@@ -171,7 +153,7 @@ const CandidateSearch = () => {
               <label className="text-xs font-bold text-slate-500">CTC (Min)</label>
               <select name="ctcMin" value={filters.ctcMin} onChange={handleChange} className="w-full mt-1 p-3 border rounded-lg bg-white">
                 <option value="">Select Min CTC</option>
-                {CTC_OPTIONS.map(opt => (
+                {ctcRanges.map(opt => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
@@ -180,7 +162,7 @@ const CandidateSearch = () => {
               <label className="text-xs font-bold text-slate-500">CTC (Max)</label>
               <select name="ctcMax" value={filters.ctcMax} onChange={handleChange} className="w-full mt-1 p-3 border rounded-lg bg-white">
                 <option value="">Select Max CTC</option>
-                {CTC_OPTIONS.map(opt => (
+                {ctcRanges.map(opt => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
@@ -189,7 +171,7 @@ const CandidateSearch = () => {
               <label className="text-xs font-bold text-slate-500">Expected CTC (Min)</label>
               <select name="expectedCtcMin" value={filters.expectedCtcMin} onChange={handleChange} className="w-full mt-1 p-3 border rounded-lg bg-white">
                 <option value="">Select Min Expected CTC</option>
-                {CTC_OPTIONS.map(opt => (
+                {ctcRanges.map(opt => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
@@ -198,7 +180,7 @@ const CandidateSearch = () => {
               <label className="text-xs font-bold text-slate-500">Expected CTC (Max)</label>
               <select name="expectedCtcMax" value={filters.expectedCtcMax} onChange={handleChange} className="w-full mt-1 p-3 border rounded-lg bg-white">
                 <option value="">Select Max Expected CTC</option>
-                {CTC_OPTIONS.map(opt => (
+                {ctcRanges.map(opt => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>

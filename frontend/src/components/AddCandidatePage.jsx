@@ -7,6 +7,7 @@ import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
 import { formatByFieldName } from '../utils/textFormatter';
+import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
 
 const AddCandidatePage = () => {
   const navigate = useNavigate();
@@ -53,9 +54,6 @@ const AddCandidatePage = () => {
     ctc: useRef(null),
   };
 
-  // CTC Ranges for dropdowns
-  const ctcRanges = ['0-50k', '50k-1L', '1L-1.5L', '1.5L-2L', '2L-2.5L', '2.5L-3L', '3L-3.5L', '3.5L-4L', '4L-4.5L', '4.5L-5L', '5L-5.5L', '5.5L-6L', '6L-8L', '8L-9L', '9L-10L', 'Above 10L'];
-  
   const countryCodes = useCountries();
 
   // Fetch master data on component mount
@@ -633,7 +631,7 @@ const AddCandidatePage = () => {
                     value={formData.ctc}
                     onChange={handleInputChange}
                     onBlur={handleBlur}
-                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 transition-all ${formErrors.ctc ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-200'}`}
+                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 transition-all max-h-52 ${formErrors.ctc ? 'border-red-400 focus:border-red-500 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-200'}`}
                   >
                     <option value="">Select CTC</option>
                     {ctcRanges.map(range => (
@@ -649,7 +647,7 @@ const AddCandidatePage = () => {
                     name="expectedCtc"
                     value={formData.expectedCtc}
                     onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all max-h-52"
                   >
                     <option value="">Select Expected CTC</option>
                     {ctcRanges.map(range => (
@@ -667,10 +665,9 @@ const AddCandidatePage = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
                   >
                     <option value="">Select Notice Period</option>
-                    <option value="Immediate">Immediate</option>
-                    <option value="30 days">30 days</option>
-                    <option value="60 days">60 days</option>
-                    <option value="90 days">90 days</option>
+                    {noticePeriodOptions.map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
                   </select>
                 </div>
 

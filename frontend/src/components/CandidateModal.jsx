@@ -585,6 +585,7 @@ import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
+import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
 
 const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId }) => {
     if (!show) return null;
@@ -621,9 +622,6 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
     };
 
     const [countryCode, setCountryCode] = useState(formData.countryCode || '+91');
-
-    // CTC Ranges for dropdowns
-    const ctcRanges = ['0-50k', '50k-1L', '1L-1.5L', '1.5L-2L', '2L-2.5L', '2.5L-3L', '3L-3.5L', '3.5L-4L', '4L-4.5L', '4.5L-5L', '5L-5.5L', '5.5L-6L', '6L-8L', '8L-9L', '9L-10L', 'Above 10L'];
 
     const countryCodes = useCountries();
 
@@ -984,7 +982,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
 
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Current CTC (LPA)</label>
-                            <select name="ctc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.ctc || ''} onChange={handleInputChange}>
+                            <select name="ctc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm max-h-52" value={formData.ctc || ''} onChange={handleInputChange}>
                                 <option value="">Select CTC</option>
                                 {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
                             </select>
@@ -992,7 +990,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
 
                         <div className="space-y-1">
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Expected CTC (LPA)</label>
-                            <select name="expectedCtc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.expectedCtc || ''} onChange={handleInputChange}>
+                            <select name="expectedCtc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm max-h-52" value={formData.expectedCtc || ''} onChange={handleInputChange}>
                                 <option value="">Select Expected CTC</option>
                                 {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
                             </select>
@@ -1002,10 +1000,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Notice Period</label>
                             <select name="noticePeriod" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.noticePeriod || ''} onChange={handleInputChange}>
                                 <option value="">Select Notice Period</option>
-                                <option value="Immediate">Immediate</option>
-                                <option value="30 days">30 days</option>
-                                <option value="60 days">60 days</option>
-                                <option value="90 days">90 days</option>
+                                {noticePeriodOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                             </select>
                         </div>
 

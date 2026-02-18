@@ -6,7 +6,7 @@ import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
-import { formatByFieldName } from '../utils/textFormatter';
+import { formatByFieldName, formatNameForInput } from '../utils/textFormatter';
 
 const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
   const navigate = useNavigate();
@@ -274,7 +274,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                   <input
                     type="text"
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: formatByFieldName('name', e.target.value) })}
+                    onChange={(e) => setFormData({ ...formData, name: formatNameForInput(e.target.value) })}
                     placeholder={`Enter ${title.slice(0, -1).toLowerCase()} name`}
                     required
                     className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
