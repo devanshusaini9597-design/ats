@@ -134,71 +134,114 @@ router.get('/', async (req, res) => {
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
         const userIdStr = String(userIdRaw).trim();
-        const userIdObj = (userIdStr.length === 24 && /^[a-fA-F0-9]+$/.test(userIdStr))
-            ? new mongoose.Types.ObjectId(userIdStr)
-            : null;
+        let userIdObj = null;
+        try {
+            if (userIdStr.length === 24 && /^[a-fA-F0-9]+$/.test(userIdStr)) {
+                userIdObj = new mongoose.Types.ObjectId(userIdStr);
+            }
+        } catch (objErr) {
+            console.warn('⚠️ Failed to create ObjectId:', objErr.message);
+        }
 
         // Own + shared filter: match both ObjectId and string so we never miss (DB can store either)
-        const createdByClause = userIdObj
-            ? { createdBy: { $in: [userIdObj, userIdStr] } }
-            : { createdBy: userIdStr };
-        const sharedClause = userIdObj
-            ? { 'sharedWith.userId': { $in: [userIdObj, userIdStr] } }
-            : { 'sharedWith.userId': userIdStr };
-
         let filter;
-        if (viewMode === 'shared') {
-            filter = sharedClause;
-        } else {
-            filter = { $or: [createdByClause, sharedClause] };
+        try {
+            const createdByClause = userIdObj
+                ? { createdBy: { $in: [userIdObj, userIdStr] } }
+                : { createdBy: userIdStr };
+            const sharedClause = userIdObj
+                ? { 'sharedWith.userId': { $in: [userIdObj, userIdStr] } }
+                : { 'sharedWith.userId': userIdStr };
+
+            if (viewMode === 'shared') {
+                filter = sharedClause;
+            } else {
+                filter = { $or: [createdByClause, sharedClause] };
+            }
+        } catch (filterErr) {
+            console.error('⚠️ Error building filter:', filterErr.message);
+            // Fallback: fetch all candidates
+            filter = {};
         }
 
-        // Fetch candidates
-        let candidatesQuery = Candidate.find(filter).sort({ createdAt: -1 }).lean();
-        if (shouldPaginate && !hasAnyFilter) {
-            candidatesQuery = candidatesQuery.limit(limit).skip(skip);
-        }
-        let candidates = await candidatesQuery;
-
+        let usedStringFallback = false;
         let usedOrphanFallback = false;
         let orphanCountForTotal = 0;
 
-        let usedStringFallback = false;
-        // Fallback 1: if 0 from main query, try createdBy as string only (some DBs store string)
-        if (candidates.length === 0 && viewMode !== 'shared') {
-            const stringFilter = { createdBy: userIdStr };
-            const stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
-            candidates = shouldPaginate && !hasAnyFilter
-                ? await stringQuery.limit(limit).skip(skip)
-                : await stringQuery;
-            if (candidates.length > 0) {
-                usedStringFallback = true;
-                console.log(`📊 Backend Query - matched ${candidates.length} by createdBy string`);
+        // Fetch candidates with error handling
+        let candidates = [];
+        try {
+            let candidatesQuery = Candidate.find(filter).sort({ createdAt: -1 }).lean();
+            if (shouldPaginate && !hasAnyFilter) {
+                candidatesQuery = candidatesQuery.limit(limit).skip(skip);
+            }
+            candidates = await candidatesQuery;
+            console.log(`📊 Backend Query - filter matched ${candidates.length} records`);
+        } catch (queryErr) {
+            console.error('❌ Database query error:', queryErr.message);
+            // Fallback 1: try with string filter only
+            try {
+                const stringFilter = { createdBy: userIdStr };
+                let stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
+                if (shouldPaginate && !hasAnyFilter) {
+                    stringQuery = stringQuery.limit(limit).skip(skip);
+                }
+                candidates = await stringQuery;
+                if (candidates.length > 0) usedStringFallback = true;
+                console.log(`📊 Backend Query - fallback matched ${candidates.length} records by string`);
+            } catch (fallbackErr) {
+                console.error('❌ Fallback query also failed:', fallbackErr.message);
+                candidates = [];
+            }
+        }
+
+        // If main query returned 0 (no throw), try createdBy as string
+        if (candidates.length === 0 && viewMode !== 'shared' && !usedStringFallback) {
+            try {
+                const stringFilter = { createdBy: userIdStr };
+                let stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
+                if (shouldPaginate && !hasAnyFilter) {
+                    stringQuery = stringQuery.limit(limit).skip(skip);
+                }
+                candidates = await stringQuery;
+                if (candidates.length > 0) usedStringFallback = true;
+                if (candidates.length > 0) console.log(`📊 Backend Query - matched ${candidates.length} by createdBy string`);
+            } catch (e) {
+                console.warn('⚠️ String fallback failed:', e.message);
             }
         }
 
         // Fallback 2: if still 0, include orphan/legacy records (no createdBy)
         if (candidates.length === 0 && viewMode !== 'shared') {
-            const orphanFilter = { $or: [{ createdBy: { $exists: false } }, { createdBy: null }] };
-            orphanCountForTotal = await Candidate.countDocuments(orphanFilter);
-            if (orphanCountForTotal > 0) {
-                usedOrphanFallback = true;
-                const orphanQuery = Candidate.find(orphanFilter).sort({ createdAt: -1 }).lean();
-                candidates = shouldPaginate && !hasAnyFilter
-                    ? await orphanQuery.limit(limit).skip(skip)
-                    : await orphanQuery;
-                console.log(`📊 Backend Query - using ${candidates.length} orphan/legacy candidates`);
+            try {
+                const orphanFilter = { $or: [{ createdBy: { $exists: false } }, { createdBy: null }] };
+                orphanCountForTotal = await Candidate.countDocuments(orphanFilter);
+                if (orphanCountForTotal > 0) {
+                    usedOrphanFallback = true;
+                    let orphanQuery = Candidate.find(orphanFilter).sort({ createdAt: -1 }).lean();
+                    if (shouldPaginate && !hasAnyFilter) {
+                        orphanQuery = orphanQuery.limit(limit).skip(skip);
+                    }
+                    candidates = await orphanQuery;
+                    console.log(`📊 Backend Query - using ${candidates.length} orphan/legacy candidates`);
+                }
+            } catch (orphanErr) {
+                console.warn('⚠️ Orphan fallback failed:', orphanErr.message);
             }
         }
 
         // Mark shared candidates so the frontend can distinguish them (orphans with no createdBy count as "own")
-        const ownerIds = new Set();
-        candidates.forEach(c => {
-            const hasOwner = c.createdBy != null && String(c.createdBy) !== '';
-            const isOwn = !hasOwner || String(c.createdBy) === userIdStr;
-            c._isShared = !isOwn;
-            if (!isOwn && hasOwner) ownerIds.add(String(c.createdBy));
-        });
+        let ownerIds = new Set();
+        try {
+            candidates.forEach(c => {
+                const hasOwner = c.createdBy != null && String(c.createdBy) !== '';
+                const isOwn = !hasOwner || String(c.createdBy) === userIdStr;
+                c._isShared = !isOwn;
+                if (!isOwn && hasOwner) ownerIds.add(String(c.createdBy));
+            });
+        } catch (markErr) {
+            console.warn('⚠️ Error marking shared candidates:', markErr.message);
+        }
 
         // Populate owner names for shared candidates (non-blocking: list still returns if this fails)
         if (ownerIds.size > 0) {
