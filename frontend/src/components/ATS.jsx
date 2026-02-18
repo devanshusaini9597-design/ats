@@ -246,22 +246,23 @@ const ATS = forwardRef((props, ref) => {
       const response = await res.json();
       console.log('🔍 API Response - isSearch:', isSearch, 'limit:', limit, 'page:', page);
       console.log('🔍 API Response received:', response);
+      console.log('🔍 response.success:', response?.success, 'response.data length:', response?.data?.length ?? (Array.isArray(response?.data) ? 0 : 'not-array'));
       
       // Handle both paginated and raw array formats
       let candidatesData = [];
       let pages = 1;
       
-      if (response.success && response.data && Array.isArray(response.data)) {
+      if (response && response.success && Array.isArray(response.data)) {
         candidatesData = response.data;
         pages = response.pagination?.totalPages || 1;
-        const total = response.pagination?.totalCount || 0;
+        const total = response.pagination?.totalCount ?? candidatesData.length;
         setTotalPages(pages);
         setTotalRecordsInDB(total);
       } else if (Array.isArray(response)) {
         candidatesData = response;
         setTotalPages(1);
         setTotalRecordsInDB(candidatesData.length);
-      } else if (res.ok && !response.success) {
+      } else if (res.ok && response && !response.success) {
         toast.error(response.message || 'Server returned an error. Please try again.');
       }
       

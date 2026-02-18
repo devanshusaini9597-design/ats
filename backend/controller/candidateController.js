@@ -2090,8 +2090,10 @@ exports.createCandidate = async (req, res) => {
         const textFields = ['name', 'position', 'companyName', 'location', 'client', 'spoc', 'source', 'noticePeriod', 'fls', 'remark'];
         textFields.forEach(f => { if (req.body[f] && typeof req.body[f] === 'string') req.body[f] = normalizeText(req.body[f]); });
 
-        // ✅ Stamp ownership: candidate belongs to the logged-in user
-        req.body.createdBy = req.user.id;
+        // ✅ Stamp ownership: candidate belongs to the logged-in user (store as ObjectId so GET filter matches)
+        const mongoose = require('mongoose');
+        const uid = req.user.id;
+        req.body.createdBy = (mongoose.Types.ObjectId.isValid(uid) ? new mongoose.Types.ObjectId(uid) : uid);
 
         const newCandidate = new Candidate(req.body);
         await newCandidate.save();

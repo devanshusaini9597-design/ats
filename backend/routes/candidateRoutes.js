@@ -129,21 +129,24 @@ router.get('/', async (req, res) => {
 
         // Build MongoDB filter - scope by the logged-in user (own + shared with me)
         const viewMode = (req.query.view || '').trim();
-        const userIdForFilter = req.user && req.user.id ? String(req.user.id) : null;
-        if (!userIdForFilter) {
+        const userIdRaw = req.user && req.user.id;
+        if (!userIdRaw) {
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
-        const userIdObjFilter = mongoose.Types.ObjectId.isValid(userIdForFilter) ? new mongoose.Types.ObjectId(userIdForFilter) : userIdForFilter;
+        const userIdStr = String(userIdRaw);
+        const userIdObj = mongoose.Types.ObjectId.isValid(userIdStr) ? new mongoose.Types.ObjectId(userIdStr) : null;
+        // Query with ObjectId so DB documents (createdBy stored as ObjectId) match reliably
+        const createdByMatch = userIdObj
+            ? { $in: [userIdObj, userIdStr] }
+            : userIdStr;
         let filter;
         if (viewMode === 'shared') {
-            // Only show candidates shared with this user (match both ObjectId and string)
-            filter = { 'sharedWith.userId': { $in: [userIdObjFilter, userIdForFilter] } };
+            filter = { 'sharedWith.userId': userIdObj ? { $in: [userIdObj, userIdStr] } : userIdStr };
         } else {
-            // Show user's own candidates AND candidates shared with them
             filter = {
                 $or: [
-                    { createdBy: { $in: [userIdObjFilter, userIdForFilter] } },
-                    { 'sharedWith.userId': { $in: [userIdObjFilter, userIdForFilter] } }
+                    { createdBy: createdByMatch },
+                    { 'sharedWith.userId': userIdObj ? { $in: [userIdObj, userIdStr] } : userIdStr }
                 ]
             };
         }
@@ -159,14 +162,32 @@ router.get('/', async (req, res) => {
         }
 
         let candidates = await candidatesQuery;
+        let usedOrphanFallback = false;
+        let orphanCountForTotal = 0;
 
-        // Mark shared candidates so the frontend can distinguish them
-        const userId = req.user.id;
+        // Fallback: if no candidates found and we're on "all" view, include legacy/orphan records (no createdBy) so list is not empty
+        if (candidates.length === 0 && viewMode !== 'shared') {
+            const orphanFilter = { $or: [{ createdBy: { $exists: false } }, { createdBy: null }] };
+            orphanCountForTotal = await Candidate.countDocuments(orphanFilter);
+            if (orphanCountForTotal > 0) {
+                usedOrphanFallback = true;
+                const orphanQuery = Candidate.find(orphanFilter).sort({ createdAt: -1 }).lean();
+                if (shouldPaginate && !hasAnyFilter) {
+                    candidates = await orphanQuery.limit(limit).skip(skip);
+                } else {
+                    candidates = await orphanQuery;
+                }
+                console.log(`📊 Backend Query - using ${candidates.length} orphan/legacy candidates (no createdBy)`);
+            }
+        }
+
+        // Mark shared candidates so the frontend can distinguish them (orphans with no createdBy count as "own")
         const ownerIds = new Set();
         candidates.forEach(c => {
-            const isOwn = String(c.createdBy) === String(userId);
+            const hasOwner = c.createdBy != null && String(c.createdBy) !== '';
+            const isOwn = !hasOwner || String(c.createdBy) === userIdStr;
             c._isShared = !isOwn;
-            if (!isOwn) ownerIds.add(String(c.createdBy));
+            if (!isOwn && hasOwner) ownerIds.add(String(c.createdBy));
         });
 
         // Populate owner names for shared candidates (non-blocking: list still returns if this fails)
@@ -284,10 +305,12 @@ router.get('/', async (req, res) => {
             })
             : candidates;
 
-        // Get total count for pagination metadata
+        // Get total count for pagination metadata (when we used orphan fallback, use orphan total)
         const totalCount = hasAnyFilter
             ? finalCandidates.length
-            : await Candidate.countDocuments(filter);
+            : usedOrphanFallback
+                ? orphanCountForTotal
+                : await Candidate.countDocuments(filter);
         const totalPages = shouldPaginate ? Math.ceil(totalCount / limit) : 1;
 
         // Apply pagination to final candidates if ANY filter was used
