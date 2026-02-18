@@ -129,7 +129,10 @@ router.get('/', async (req, res) => {
 
         // Build MongoDB filter - scope by the logged-in user (own + shared with me)
         const viewMode = (req.query.view || '').trim();
-        const userIdForFilter = req.user.id;
+        const userIdForFilter = req.user && req.user.id ? String(req.user.id) : null;
+        if (!userIdForFilter) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
         const userIdObjFilter = mongoose.Types.ObjectId.isValid(userIdForFilter) ? new mongoose.Types.ObjectId(userIdForFilter) : userIdForFilter;
         let filter;
         if (viewMode === 'shared') {
@@ -166,15 +169,20 @@ router.get('/', async (req, res) => {
             if (!isOwn) ownerIds.add(String(c.createdBy));
         });
 
-        // Populate owner names for shared candidates
+        // Populate owner names for shared candidates (non-blocking: list still returns if this fails)
         if (ownerIds.size > 0) {
-            const User = require('mongoose').model('User');
-            const owners = await User.find({ _id: { $in: [...ownerIds] } }).select('name email').lean();
-            const ownerMap = {};
-            owners.forEach(o => { ownerMap[String(o._id)] = o.name || o.email; });
-            candidates.forEach(c => {
-                if (c._isShared) c._sharedByOwner = ownerMap[String(c.createdBy)] || 'Unknown';
-            });
+            try {
+                const User = require('mongoose').model('User');
+                const ownerIdList = [...ownerIds];
+                const owners = await User.find({ _id: { $in: ownerIdList } }).select('name email').lean();
+                const ownerMap = {};
+                owners.forEach(o => { ownerMap[String(o._id)] = o.name || o.email; });
+                candidates.forEach(c => {
+                    if (c._isShared) c._sharedByOwner = ownerMap[String(c.createdBy)] || 'Unknown';
+                });
+            } catch (ownerErr) {
+                console.warn('⚠️ Shared-by owner lookup failed (candidates still returned):', ownerErr.message);
+            }
         }
 
         console.log(`📊 Backend Query - hasAnyFilter: ${hasAnyFilter}, returned: ${candidates.length} records`);

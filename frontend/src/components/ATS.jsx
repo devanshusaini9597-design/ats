@@ -257,12 +257,12 @@ const ATS = forwardRef((props, ref) => {
         const total = response.pagination?.totalCount || 0;
         setTotalPages(pages);
         setTotalRecordsInDB(total);
-        // Fetched candidates from page
       } else if (Array.isArray(response)) {
         candidatesData = response;
         setTotalPages(1);
         setTotalRecordsInDB(candidatesData.length);
-        // Fetched candidates (direct array)
+      } else if (res.ok && !response.success) {
+        toast.error(response.message || 'Server returned an error. Please try again.');
       }
       
       if (page === 1) {
@@ -284,6 +284,7 @@ const ATS = forwardRef((props, ref) => {
     } catch (error) { 
       console.error("Error fetching data:", error); 
       setCandidates([]);
+      toast.error(error?.message || 'Failed to load candidates. Please refresh or check your connection.');
     } finally {
       setIsLoadingMore(false);
       setIsLoadingInitial(false);
