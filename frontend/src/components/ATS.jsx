@@ -38,7 +38,7 @@ const ATS = forwardRef((props, ref) => {
   const [jobs, setJobs] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchScope, setSearchScope] = useState('all');
-  const [viewMode, setViewMode] = useState(searchParams.get('view') || 'all'); // 'all' | 'shared'
+  const [viewMode] = useState('all'); // Always 'all' - Shared tab removed
   const [filterJob, setFilterJob] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -234,9 +234,8 @@ const ATS = forwardRef((props, ref) => {
       });
       if (search) params.append('search', search);
       if (position) params.append('position', position);
-      if (viewMode === 'shared') params.append('view', 'shared');
 
-      const res = await authenticatedFetch(`${API_URL}?${params.toString()}`);
+      const res = await authenticatedFetch(`${API_URL}?${params.toString()}`, { cache: 'no-store' });
       
       if (isUnauthorized(res)) {
         handleUnauthorized();
@@ -252,18 +251,31 @@ const ATS = forwardRef((props, ref) => {
       let candidatesData = [];
       let pages = 1;
       
-      if (response && response.success && Array.isArray(response.data)) {
+      if (response && response.success === true && Array.isArray(response.data)) {
+        // API returned success response with pagination
         candidatesData = response.data;
         pages = response.pagination?.totalPages || 1;
         const total = response.pagination?.totalCount ?? candidatesData.length;
         setTotalPages(pages);
         setTotalRecordsInDB(total);
+        console.log('✅ Candidates loaded:', candidatesData.length, 'Total:', total);
       } else if (Array.isArray(response)) {
+        // API returned raw array (legacy format)
         candidatesData = response;
         setTotalPages(1);
         setTotalRecordsInDB(candidatesData.length);
-      } else if (res.ok && response && !response.success) {
+        console.log('✅ Candidates loaded (legacy):', candidatesData.length);
+      } else if (!res.ok) {
+        // HTTP error
+        toast.error(response?.message || 'Failed to load candidates. Please try again.');
+        console.error('❌ API Error:', response);
+      } else if (response && response.success === false) {
+        // API returned error response
         toast.error(response.message || 'Server returned an error. Please try again.');
+        console.error('❌ API returned error:', response.message);
+      } else {
+        // Unexpected response format
+        console.error('❌ Unexpected response format:', response);
       }
       
       if (page === 1) {
@@ -273,19 +285,28 @@ const ATS = forwardRef((props, ref) => {
       }
       setCurrentPage(page);
 
-      const jobRes = await authenticatedFetch(`${JOBS_URL}?isTemplate=false`);
-      
-      if (isUnauthorized(jobRes)) {
-        handleUnauthorized();
-        return;
+      try {
+        const jobRes = await authenticatedFetch(`${JOBS_URL}?isTemplate=false`);
+        
+        if (isUnauthorized(jobRes)) {
+          handleUnauthorized();
+          return;
+        }
+        
+        const jobData = await jobRes.json();
+        if (Array.isArray(jobData)) {
+          setJobs(jobData);
+        } else if (jobData && jobData.data && Array.isArray(jobData.data)) {
+          setJobs(jobData.data);
+        }
+      } catch (jobError) {
+        console.warn('⚠️ Failed to load jobs:', jobError.message);
+        // Don't fail the entire load if jobs fail
       }
-      
-      const jobData = await jobRes.json();
-      setJobs(jobData);
     } catch (error) { 
-      console.error("Error fetching data:", error); 
+      console.error("❌ Error fetching data:", error); 
       setCandidates([]);
-      toast.error(error?.message || 'Failed to load candidates. Please refresh or check your connection.');
+      toast.error('Failed to load candidates. Please refresh page or check your connection.');
     } finally {
       setIsLoadingMore(false);
       setIsLoadingInitial(false);
@@ -317,16 +338,10 @@ const ATS = forwardRef((props, ref) => {
     };
   });
 
-  // Read URL view param on mount / when URL changes
-  useEffect(() => {
-    const urlView = searchParams.get('view');
-    if (urlView && urlView !== viewMode) setViewMode(urlView);
-  }, [searchParams]);
-
-  // INITIAL DATA LOAD + re-fetch when viewMode changes
+  // INITIAL DATA LOAD
   useEffect(() => {
     fetchData(1, { search: '', position: '' });
-  }, [viewMode]);
+  }, []);
 
   // ✅ SEARCH/FILTER CHANGES - Reset to page 1 (filtering is all client-side)
   useEffect(() => {
@@ -1400,13 +1415,13 @@ const handleDelete = (id) => {
   const getIdsToImportShared = () => {
     return selectedIds.length > 0
       ? candidates.filter(c => selectedIds.includes(c._id) && c._isShared).map(c => c._id)
-      : (viewMode === 'shared' ? filteredCandidates.filter(c => c._isShared).map(c => c._id) : []);
+      : filteredCandidates.filter(c => c._isShared).map(c => c._id);
   };
 
   const handleImportSharedToMineClick = () => {
     const idsToImport = getIdsToImportShared();
     if (idsToImport.length === 0) {
-      toast.warning(viewMode === 'shared' ? 'Select shared candidate(s) or ensure you have shared records.' : 'No shared candidates selected.');
+      toast.warning('No shared candidates selected.');
       return;
     }
     setShowImportSharedConfirm(true);
@@ -2020,7 +2035,7 @@ const handleAddCandidate = async (e) => {
       label: 'Source',
       render: (candidate) => candidate.source ? <span className="text-sm px-2.5 py-0.5 bg-gray-100 text-gray-600 rounded-full whitespace-nowrap">{candidate.source}</span> : <span className="text-gray-300">—</span>
     },
-    ...(viewMode === 'shared' || candidates.some(c => c._isShared) ? [{
+    ...(candidates.some(c => c._isShared) ? [{
       key: 'sharedBy',
       label: 'Shared By',
       render: (candidate) => candidate._isShared ? (
@@ -2290,29 +2305,14 @@ const handleAddCandidate = async (e) => {
           <div className="flex-1">
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
-                {viewMode === 'shared' ? 'Shared With Me' : 'All Candidates'}
+                All Candidates
               </h1>
-              <div className="flex bg-gray-100 rounded-lg p-0.5">
-                <button
-                  onClick={() => { setViewMode('all'); setSearchParams({}); }}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${viewMode === 'all' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
-                >
-                  All
-                </button>
-                <button
-                  onClick={() => { setViewMode('shared'); setSearchParams({ view: 'shared' }); }}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${viewMode === 'shared' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}
-                >
-                  Shared
-                </button>
-              </div>
             </div>
             <p className="text-gray-500 text-xs mt-0.5">
               {filteredCandidates.length.toLocaleString()} records
-              {viewMode === 'shared' && <span className="text-emerald-600"> shared with you by team members</span>}
               {searchQuery && <span> matching &ldquo;{searchQuery}&rdquo;</span>}
             </p>
-            {viewMode === 'shared' && filteredCandidates.some(c => c._isShared) && (
+            {filteredCandidates.some(c => c._isShared) && (
               <button
                 onClick={handleImportSharedToMineClick}
                 disabled={isImportingShared}
