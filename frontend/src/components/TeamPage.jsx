@@ -19,6 +19,7 @@ const TeamPage = () => {
   // Company domain info
   const [companyDomain, setCompanyDomain] = useState(null);
   const [isCompanyEmail, setIsCompanyEmail] = useState(null);
+  const [emailError, setEmailError] = useState('');
 
   // Form state
   const [showForm, setShowForm] = useState(false);
@@ -101,6 +102,7 @@ const TeamPage = () => {
   };
 
   const checkEmailDomain = (email) => {
+    setEmailError('');
     if (!email || !companyDomain?.domain) {
       setIsCompanyEmail(null);
       return;
@@ -108,17 +110,22 @@ const TeamPage = () => {
     const emailDomain = email.toLowerCase().split('@')[1];
     if (!emailDomain) {
       setIsCompanyEmail(null);
+      setEmailError('Enter a valid email address.');
       return;
     }
-    const isCompany = emailDomain === companyDomain.domain || 
+    const isCompany = emailDomain === companyDomain.domain ||
       (companyDomain.allowedDomains || []).includes(emailDomain);
     setIsCompanyEmail(isCompany);
+    if (!isCompany) {
+      setEmailError(`Only @${companyDomain.domain} addresses are allowed. User must already have an account.`);
+    }
   };
 
   const resetForm = () => {
     setFormData({ name: '', email: '', role: 'Team Member', phone: '', department: '' });
     setEditingId(null);
     setShowForm(false);
+    setEmailError('');
   };
 
   const handleEdit = (member) => {
@@ -130,15 +137,21 @@ const TeamPage = () => {
   const handleSave = async () => {
     if (!formData.name.trim()) { toast.error('Name is required'); return; }
     if (!formData.email.trim()) { toast.error('Email is required'); return; }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(formData.email)) { toast.error('Enter a valid email'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(formData.email)) {
+      setEmailError('Enter a valid email address.');
+      toast.error('Enter a valid email');
+      return;
+    }
     if (companyDomain?.domain) {
       const domain = companyDomain.domain.toLowerCase();
       const emailDomain = formData.email.trim().toLowerCase().split('@')[1];
       if (emailDomain !== domain) {
+        setEmailError(`Only @${domain} addresses are allowed. User must already have an account.`);
         toast.error(`Only company email addresses (@${domain}) are allowed.`);
         return;
       }
     }
+    setEmailError('');
 
     setIsSaving(true);
     try {
@@ -348,13 +361,24 @@ const TeamPage = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Email Address *</label>
-                    {companyDomain?.domain && (
-                      <p className="text-xs text-amber-600 mb-1">Only @{companyDomain.domain} addresses. User must already have an account.</p>
+                    {emailError && (
+                      <p className="text-xs text-red-600 mb-1 flex items-center gap-1">
+                        <AlertCircle size={12} /> {emailError}
+                      </p>
                     )}
                     <div className="relative">
                       <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                      <input type="email" value={formData.email} onChange={e => setFormData(p => ({ ...p, email: e.target.value.trim().toLowerCase() }))}
-                        className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none" placeholder="john@company.com" />
+                      <input
+                        type="email"
+                        value={formData.email}
+                        onChange={e => {
+                          setFormData(p => ({ ...p, email: e.target.value.trim().toLowerCase() }));
+                          if (emailError) setEmailError('');
+                        }}
+                        onBlur={() => formData.email && checkEmailDomain(formData.email)}
+                        className={`w-full pl-9 pr-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none ${emailError ? 'border-red-400 bg-red-50/50' : 'border-gray-300'}`}
+                        placeholder={companyDomain?.domain ? `xyz@${companyDomain.domain}` : 'xyz@skillnixrecruitment.com'}
+                      />
                     </div>
                   </div>
                 </div>

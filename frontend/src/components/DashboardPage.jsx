@@ -39,21 +39,21 @@ const DashboardPage = () => {
   }, []);
 
   const StatCard = ({ icon: Icon, label, value, trend, color, bgColor }) => (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-lg transition-all duration-200">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <p className="text-gray-500 text-sm font-medium">{label}</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">{loading ? '—' : value}</p>
+    <div className="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-lg transition-all duration-200 min-h-[100px] flex flex-col justify-between">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-gray-500 text-sm font-medium truncate">{label}</p>
+          <p className="text-2xl sm:text-3xl font-bold text-gray-900 mt-1 tabular-nums">{loading ? '—' : value}</p>
           {trend !== undefined && trend !== null && (
             <div className="flex items-center gap-1 mt-2">
-              {trend >= 0 ? <TrendingUp size={14} className="text-green-600" /> : <TrendingDown size={14} className="text-red-500" />}
+              {trend >= 0 ? <TrendingUp size={14} className="text-green-600 flex-shrink-0" /> : <TrendingDown size={14} className="text-red-500 flex-shrink-0" />}
               <span className={`text-xs font-semibold ${trend >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                 {trend >= 0 ? '+' : ''}{trend}% vs last month
               </span>
             </div>
           )}
         </div>
-        <div className={`p-3 rounded-xl ${bgColor}`}>
+        <div className={`p-3 rounded-xl flex-shrink-0 ${bgColor}`}>
           <Icon size={22} className={color} />
         </div>
       </div>
@@ -183,16 +183,16 @@ const DashboardPage = () => {
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <h2 className="text-base font-bold text-gray-900 mb-4">Quick Actions</h2>
               <div className="space-y-2.5">
-                <button onClick={() => navigate('/add-candidate')} className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors cursor-pointer text-sm">
+                <button onClick={() => navigate('/add-candidate')} className="w-full min-h-[44px] px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors cursor-pointer text-sm text-left">
                   + Add Candidate
                 </button>
-                <button onClick={() => navigate('/ats')} className="w-full px-4 py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 rounded-lg font-medium transition-colors cursor-pointer text-sm">
+                <button onClick={() => navigate('/ats')} className="w-full min-h-[44px] px-4 py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 rounded-lg font-medium transition-colors cursor-pointer text-sm text-left">
                   View All Candidates
                 </button>
-                <button onClick={() => navigate('/resume-parsing')} className="w-full px-4 py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 rounded-lg font-medium transition-colors cursor-pointer text-sm">
+                <button onClick={() => navigate('/resume-parsing')} className="w-full min-h-[44px] px-4 py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 rounded-lg font-medium transition-colors cursor-pointer text-sm text-left">
                   Resume Parsing
                 </button>
-                <button onClick={() => navigate('/email-templates')} className="w-full px-4 py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 rounded-lg font-medium transition-colors cursor-pointer text-sm">
+                <button onClick={() => navigate('/email-templates')} className="w-full min-h-[44px] px-4 py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 rounded-lg font-medium transition-colors cursor-pointer text-sm text-left">
                   Email Templates
                 </button>
               </div>

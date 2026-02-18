@@ -23,6 +23,7 @@ const PendingReviewPage = () => {
   const [selectedIds, setSelectedIds] = useState([]);
   const [isImporting, setIsImporting] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false });
+  const [clearAllConfirm, setClearAllConfirm] = useState(false);
 
   const fetchPendingCandidates = async (page = 1, category = activeTab, search = searchQuery) => {
     try {
@@ -210,6 +211,12 @@ const PendingReviewPage = () => {
                   className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 flex items-center gap-2">
                   <RefreshCw size={16} /> Refresh
                 </button>
+                {totalRecords > 0 && (
+                  <button onClick={() => setClearAllConfirm(true)}
+                    className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50 flex items-center gap-2">
+                    <Trash2 size={16} /> Clear all ({totalRecords})
+                  </button>
+                )}
                 {selectedIds.length > 0 && (
                   <>
                     <button onClick={handleImportSelected} disabled={isImporting}
@@ -416,6 +423,36 @@ const PendingReviewPage = () => {
           onConfirm={confirmModal.onConfirm}
           onCancel={() => setConfirmModal({ isOpen: false })}
         />
+
+        {clearAllConfirm && (
+          <ConfirmationModal
+            isOpen={true}
+            type="delete"
+            title="Clear all pending records"
+            message={`Are you sure you want to delete all ${totalRecords} pending records? This cannot be undone. Use this to clean up old batches (e.g. after re-uploading the same file many times).`}
+            confirmText="Clear all"
+            onConfirm={async () => {
+              try {
+                const res = await authenticatedFetch(`${BASE_API_URL}/candidates/pending/clear-all`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                  toast.success(data.message || `Cleared ${data.deletedCount} records.`);
+                  setClearAllConfirm(false);
+                  fetchPendingCandidates(1, 'all', '');
+                  setTotalRecords(0);
+                  setStats({ review: 0, blocked: 0, total: 0 });
+                  setSelectedIds([]);
+                } else {
+                  toast.error(data.message || 'Failed to clear');
+                }
+              } catch (e) {
+                toast.error('Failed to clear pending records');
+              }
+              setClearAllConfirm(false);
+            }}
+            onCancel={() => setClearAllConfirm(false)}
+          />
+        )}
       </div>
     </Layout>
   );

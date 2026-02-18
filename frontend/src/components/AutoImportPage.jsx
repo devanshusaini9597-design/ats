@@ -29,6 +29,7 @@ const AutoImportPage = () => {
   const [isImporting, setIsImporting] = useState(false);
   const [stats, setStats] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false });
+  const [importSuccessModal, setImportSuccessModal] = useState(null);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -313,10 +314,18 @@ const AutoImportPage = () => {
 
       const pendingCount = (reviewData.review?.length || 0) + (reviewData.blocked?.length || 0);
       toast.success(`Imported ${result.imported} ready records!${pendingCount > 0 ? ` ${pendingCount} review/blocked records are in Pending Review.` : ''}`);
-      localStorage.removeItem(DRAFT_KEY);
-      setTimeout(() => navigate('/ats'), 2000);
+      setImportSuccessModal({ imported: result.imported, pendingCount });
     } catch (error) { toast.error('Import error: ' + error.message); }
     finally { setIsImporting(false); }
+  };
+
+  const closeImportSuccessAndGoToAts = () => {
+    localStorage.removeItem(DRAFT_KEY);
+    setImportSuccessModal(null);
+    setReviewData(null);
+    setStats(null);
+    setFileName('');
+    navigate('/ats');
   };
 
   const handleSaveEditedRecord = async () => {
@@ -765,6 +774,12 @@ const AutoImportPage = () => {
                   </div>
                 )}
 
+                {/* Duplicate rules (for user reference) */}
+                <div className="mb-5 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                  <p className="text-xs font-semibold text-blue-800 mb-1">Duplicate validation rules</p>
+                  <p className="text-xs text-blue-700">We check <strong>email</strong> and <strong>phone</strong> against your existing candidates. If a match is found, importing this record will <strong>update</strong> that candidate instead of creating a duplicate.</p>
+                </div>
+
                 {/* Validation Summary */}
                 {editingRow.validation && (editingRow.validation.errors?.length > 0 || editingRow.validation.warnings?.length > 0) && (
                   <div className="mb-5 p-4 bg-gray-50 rounded-lg border border-gray-200">
@@ -836,6 +851,28 @@ const AutoImportPage = () => {
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {importSuccessModal && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 text-center">
+              <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+                <CheckCircle size={28} className="text-green-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-2">Import successful</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                {importSuccessModal.imported} record{importSuccessModal.imported !== 1 ? 's' : ''} have been imported to All Candidates.
+                {importSuccessModal.pendingCount > 0 && (
+                  <span className="block mt-2"> {importSuccessModal.pendingCount} review/blocked record{importSuccessModal.pendingCount !== 1 ? 's' : ''} are in Pending Review — fix and import from there when ready.</span>
+                )}
+              </p>
+              <p className="text-xs text-gray-500 mb-4">You can stay here to review the file or go to All Candidates.</p>
+              <div className="flex gap-3">
+                <button onClick={() => setImportSuccessModal(null)} className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">Stay here</button>
+                <button onClick={closeImportSuccessAndGoToAts} className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700">Check All Candidates</button>
               </div>
             </div>
           </div>

@@ -113,7 +113,10 @@ router.get('/', async (req, res) => {
       if (!e) return;
       if (!byEmail[e] || m.invitedMe) byEmail[e] = m;
     });
-    const members = Object.values(byEmail).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    // Exclude current user from team directory — show only other members
+    const members = Object.values(byEmail)
+      .filter(m => (m.email || '').toLowerCase() !== userEmail)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
     res.json({ success: true, members });
   } catch (err) {
@@ -192,7 +195,7 @@ router.post('/', async (req, res) => {
     });
     
     if (existingPending) {
-      return res.status(400).json({ success: false, message: 'Invitation already sent to this email. Wait for them to respond.' });
+      return res.status(400).json({ success: false, message: 'This user has already been invited. Please wait for them to accept or decline the request.' });
     }
 
     // Require that the invited email exists as a registered user (company member)

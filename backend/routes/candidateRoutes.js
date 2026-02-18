@@ -129,16 +129,18 @@ router.get('/', async (req, res) => {
 
         // Build MongoDB filter - scope by the logged-in user (own + shared with me)
         const viewMode = (req.query.view || '').trim();
+        const userIdForFilter = req.user.id;
+        const userIdObjFilter = mongoose.Types.ObjectId.isValid(userIdForFilter) ? new mongoose.Types.ObjectId(userIdForFilter) : userIdForFilter;
         let filter;
         if (viewMode === 'shared') {
-            // Only show candidates shared with this user
-            filter = { 'sharedWith.userId': req.user.id };
+            // Only show candidates shared with this user (match both ObjectId and string)
+            filter = { 'sharedWith.userId': { $in: [userIdObjFilter, userIdForFilter] } };
         } else {
             // Show user's own candidates AND candidates shared with them
             filter = {
                 $or: [
-                    { createdBy: req.user.id },
-                    { 'sharedWith.userId': req.user.id }
+                    { createdBy: { $in: [userIdObjFilter, userIdForFilter] } },
+                    { 'sharedWith.userId': { $in: [userIdObjFilter, userIdForFilter] } }
                 ]
             };
         }
@@ -704,6 +706,9 @@ router.post('/import-reviewed', candidateController.importReviewedCandidates);
 // ✅ Share candidate with team members
 router.post('/share', candidateController.shareCandidate);
 
+// Import shared candidates into current user's database (copy as own)
+router.post('/import-shared', candidateController.importSharedCandidates);
+
 // ================= PENDING CANDIDATES (Review / Blocked) =================
 const PendingCandidate = require('../models/PendingCandidate');
 
@@ -717,6 +722,7 @@ router.post('/pending/save', async (req, res) => {
 
         const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const userId = req.user.id;
+        const createdByObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
 
         const getVal = (r, key) => r.fixed?.[key] ?? r[key];
         const docs = records.map(r => ({
@@ -747,7 +753,7 @@ router.post('/pending/save', async (req, res) => {
             validationWarnings: r.validation?.warnings || [],
             autoFixChanges: r.autoFixChanges || [],
             swaps: r.swaps || [],
-            createdBy: userId
+            createdBy: createdByObj
         }));
 
         await PendingCandidate.insertMany(docs);
@@ -759,18 +765,20 @@ router.post('/pending/save', async (req, res) => {
     }
 });
 
-// Get pending candidates (with pagination and filtering)
+// Get pending candidates (with pagination and filtering) — user sees only their own data
 router.get('/pending', async (req, res) => {
     try {
         const { category, page = 1, limit = 50, search, batchId } = req.query;
         const userId = req.user.id;
         const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+        // Match both ObjectId and string so records show whether stored as either type
+        const createdByFilter = { $in: [userIdObj, userId] };
 
-        const filter = { createdBy: userIdObj };
+        const filter = { createdBy: createdByFilter };
         if (category && category !== 'all') filter.category = category;
         if (batchId) filter.batchId = batchId;
-        if (search) {
-            const q = new RegExp(search, 'i');
+        if (search && search.trim()) {
+            const q = new RegExp(search.trim(), 'i');
             filter.$or = [
                 { name: q }, { email: q }, { contact: q },
                 { companyName: q }, { location: q }, { position: q }
@@ -778,15 +786,16 @@ router.get('/pending', async (req, res) => {
         }
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
+        const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
         const [candidates, total] = await Promise.all([
-            PendingCandidate.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)).lean(),
+            PendingCandidate.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
             PendingCandidate.countDocuments(filter)
         ]);
 
-        // Get category counts
+        const countFilter = { createdBy: createdByFilter };
         const [reviewCount, blockedCount] = await Promise.all([
-            PendingCandidate.countDocuments({ createdBy: userIdObj, category: 'review' }),
-            PendingCandidate.countDocuments({ createdBy: userIdObj, category: 'blocked' })
+            PendingCandidate.countDocuments({ ...countFilter, category: 'review' }),
+            PendingCandidate.countDocuments({ ...countFilter, category: 'blocked' })
         ]);
 
         res.json({
@@ -823,8 +832,22 @@ router.post('/pending/delete', async (req, res) => {
         const { ids } = req.body;
         if (!ids || !Array.isArray(ids)) return res.status(400).json({ success: false, message: 'No IDs provided' });
 
-        const result = await PendingCandidate.deleteMany({ _id: { $in: ids }, createdBy: req.user.id });
+        const userId = req.user.id;
+        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+        const result = await PendingCandidate.deleteMany({ _id: { $in: ids }, createdBy: { $in: [userIdObj, userId] } });
         res.json({ success: true, deletedCount: result.deletedCount });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Clear all pending records for the current user (enterprise-style cleanup)
+router.post('/pending/clear-all', async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+        const result = await PendingCandidate.deleteMany({ createdBy: { $in: [userIdObj, userId] } });
+        res.json({ success: true, deletedCount: result.deletedCount, message: `Cleared ${result.deletedCount} pending records.` });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

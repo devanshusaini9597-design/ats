@@ -22,6 +22,8 @@ const ProfileSettingsPage = () => {
   // Profile picture state
   const [profilePicture, setProfilePicture] = useState('');
   const [isUploadingPic, setIsUploadingPic] = useState(false);
+  const [pendingPhotoFile, setPendingPhotoFile] = useState(null);
+  const [pendingPhotoPreview, setPendingPhotoPreview] = useState(null);
   const profilePicRef = React.useRef(null);
 
   // Password state
@@ -111,10 +113,19 @@ const ProfileSettingsPage = () => {
     if (!validExts.includes(ext)) { toast.error('Only image files (JPG, PNG, GIF, WebP) are allowed'); return; }
     if (file.size > 5 * 1024 * 1024) { toast.error('Image must be under 5 MB'); return; }
 
+    setPendingPhotoFile(file);
+    const reader = new FileReader();
+    reader.onload = () => setPendingPhotoPreview(reader.result);
+    reader.readAsDataURL(file);
+    e.target.value = null;
+  };
+
+  const handleSaveProfilePicture = async () => {
+    if (!pendingPhotoFile) return;
     setIsUploadingPic(true);
     try {
       const formData = new FormData();
-      formData.append('profilePicture', file);
+      formData.append('profilePicture', pendingPhotoFile);
       const token = localStorage.getItem('token');
       const res = await fetch(`${BASE}/api/profile/picture`, {
         method: 'PUT',
@@ -124,15 +135,16 @@ const ProfileSettingsPage = () => {
       const data = await res.json();
       if (data.success) {
         setProfilePicture(data.profilePicture);
-        toast.success('Profile picture updated');
+        setPendingPhotoFile(null);
+        setPendingPhotoPreview(null);
+        toast.success('Profile picture saved');
       } else {
-        toast.error(data.message || 'Failed to upload picture');
+        toast.error(data.message || 'Failed to save picture');
       }
     } catch {
-      toast.error('Failed to upload profile picture');
+      toast.error('Failed to save profile picture');
     } finally {
       setIsUploadingPic(false);
-      e.target.value = null;
     }
   };
 
@@ -269,7 +281,9 @@ const ProfileSettingsPage = () => {
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-4">
               <div className="flex flex-col items-center text-center">
                 <div className="relative group mb-3">
-                  {profilePicture ? (
+                  {pendingPhotoPreview ? (
+                    <img src={pendingPhotoPreview} alt="New profile" className="w-20 h-20 rounded-full object-cover shadow-lg border-2 border-blue-300" />
+                  ) : profilePicture ? (
                     <img
                       src={`${BASE}${profilePicture}`}
                       alt="Profile"
@@ -284,12 +298,12 @@ const ProfileSettingsPage = () => {
                     onClick={() => profilePicRef.current?.click()}
                     disabled={isUploadingPic}
                     className="absolute bottom-0 right-0 w-7 h-7 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-md hover:bg-blue-700 transition-colors border-2 border-white"
-                    title="Upload photo"
+                    title="Choose photo"
                   >
                     {isUploadingPic ? <Loader2 size={12} className="animate-spin" /> : <Camera size={12} />}
                   </button>
                   <input ref={profilePicRef} type="file" accept="image/*" className="hidden" onChange={handleUploadProfilePicture} />
-                  {profilePicture && (
+                  {!pendingPhotoPreview && profilePicture && (
                     <button
                       onClick={handleRemoveProfilePicture}
                       className="absolute top-0 right-0 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow-sm hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -299,6 +313,24 @@ const ProfileSettingsPage = () => {
                     </button>
                   )}
                 </div>
+                {pendingPhotoPreview && (
+                  <div className="flex items-center justify-center gap-2 mt-2">
+                    <button
+                      onClick={handleSaveProfilePicture}
+                      disabled={isUploadingPic}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+                    >
+                      {isUploadingPic ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                      Save photo
+                    </button>
+                    <button
+                      onClick={() => { setPendingPhotoFile(null); setPendingPhotoPreview(null); }}
+                      className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
                 <h3 className="text-base font-semibold text-gray-900">{profile.name || 'No Name'}</h3>
                 <p className="text-xs text-gray-500 mt-0.5">{profile.email}</p>
                 {stats.memberSince && (

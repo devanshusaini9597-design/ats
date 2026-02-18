@@ -2155,7 +2155,8 @@ exports.bulkCreateFromParsed = async (req, res) => {
                     companyName: (c.companyName || c.company || '').trim() || '',
                     experience: (c.experience || '').toString().trim() || '',
                     location: (c.location || '').trim() || '',
-                    remark: (c.skills ? `Skills: ${c.skills}` : '') + (c.education ? ` | Education: ${c.education}` : '').replace(/^\s*\|\s*/, ''),
+                    skills: (c.skills || '').trim() || '',
+                    remark: (c.education ? `Education: ${c.education}` : '').trim() || '',
                     status: 'Applied',
                     createdBy: userId,
                     date: new Date().toISOString().split('T')[0]
@@ -2362,5 +2363,49 @@ exports.shareCandidate = async (req, res) => {
             message: "Error sharing candidate", 
             error: error.message 
         });
+    }
+};
+
+// Import shared candidates into current user's database (copy as own candidates)
+exports.importSharedCandidates = async (req, res) => {
+    try {
+        const { candidateIds } = req.body;
+        const userId = req.user.id;
+        const ids = Array.isArray(candidateIds) ? candidateIds : [candidateIds];
+        if (!ids.length) {
+            return res.status(400).json({ success: false, message: 'candidateIds array is required' });
+        }
+
+        const userIdObj = require('mongoose').Types.ObjectId.isValid(userId) ? new require('mongoose').Types.ObjectId(userId) : userId;
+        const shared = await Candidate.find({
+            _id: { $in: ids },
+            'sharedWith.userId': userIdObj
+        }).lean();
+
+        if (shared.length === 0) {
+            return res.status(400).json({ success: false, message: 'No shared candidates found or you do not have access' });
+        }
+
+        const created = [];
+        for (const c of shared) {
+            const { _id, createdBy, sharedWith, createdAt, __v, ...rest } = c;
+            const doc = new Candidate({
+                ...rest,
+                createdBy: userId,
+                sharedWith: []
+            });
+            await doc.save();
+            created.push({ id: doc._id, name: doc.name });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `Imported ${created.length} candidate(s) to your database`,
+            imported: created.length,
+            details: created
+        });
+    } catch (error) {
+        console.error('Import shared error:', error);
+        res.status(500).json({ success: false, message: error.message || 'Server error' });
     }
 };

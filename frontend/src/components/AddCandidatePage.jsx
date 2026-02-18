@@ -38,6 +38,7 @@ const AddCandidatePage = () => {
     resume: null,
     callBackDate: '',
     countryCode: '+91',
+    skills: '',
     remark: ''
   };
 
@@ -104,7 +105,8 @@ const AddCandidatePage = () => {
           position: resumeData.position || prev.position,
           companyName: resumeData.company || prev.companyName,
           experience: resumeData.experience || prev.experience,
-          location: resumeData.location || prev.location
+          location: resumeData.location || prev.location,
+          skills: resumeData.skills || prev.skills
         }));
         // Clear the localStorage after loading
         localStorage.removeItem('parsedResumeData');
@@ -782,6 +784,17 @@ const AddCandidatePage = () => {
 
               </div>
               <div className="grid grid-cols-1 gap-4 mt-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1.5">Skills (from resume)</label>
+                  <textarea
+                    name="skills"
+                    value={formData.skills}
+                    onChange={handleInputChange}
+                    placeholder="e.g. Java, React, AWS (from parsed resume)"
+                    rows="2"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all resize-none"
+                  />
+                </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1.5">Remark</label>
                   <textarea

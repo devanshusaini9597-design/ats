@@ -117,6 +117,9 @@ const ATS = forwardRef((props, ref) => {
   const [selectedShareMembers, setSelectedShareMembers] = useState([]);
   const [selectedCandidatesForShare, setSelectedCandidatesForShare] = useState([]);
   const [isSharingCandidate, setIsSharingCandidate] = useState(false);
+  const [isImportingShared, setIsImportingShared] = useState(false);
+  const [showImportSharedConfirm, setShowImportSharedConfirm] = useState(false);
+  const [importSharedSuccess, setImportSharedSuccess] = useState(null); // { imported: number }
 
   // Confirmation Modal States
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, type: 'warning', title: '', message: '', details: null, confirmText: 'Confirm', onConfirm: () => {}, isLoading: false });
@@ -1391,7 +1394,48 @@ const handleDelete = (id) => {
       setIsSharingCandidate(false);
     }
   };
- 
+
+  const getIdsToImportShared = () => {
+    return selectedIds.length > 0
+      ? candidates.filter(c => selectedIds.includes(c._id) && c._isShared).map(c => c._id)
+      : (viewMode === 'shared' ? filteredCandidates.filter(c => c._isShared).map(c => c._id) : []);
+  };
+
+  const handleImportSharedToMineClick = () => {
+    const idsToImport = getIdsToImportShared();
+    if (idsToImport.length === 0) {
+      toast.warning(viewMode === 'shared' ? 'Select shared candidate(s) or ensure you have shared records.' : 'No shared candidates selected.');
+      return;
+    }
+    setShowImportSharedConfirm(true);
+  };
+
+  const handleImportSharedToMine = async () => {
+    setShowImportSharedConfirm(false);
+    const idsToImport = getIdsToImportShared();
+    if (idsToImport.length === 0) return;
+    setIsImportingShared(true);
+    try {
+      const res = await authenticatedFetch(`${BASE_API_URL}/candidates/import-shared`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidateIds: idsToImport })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setImportSharedSuccess({ imported: data.imported || 0 });
+        if (selectedIds.length > 0) setSelectedIds([]);
+        fetchCandidates(1, true);
+      } else {
+        toast.error(data.message || 'Import failed');
+      }
+    } catch (err) {
+      toast.error(err.message || 'Failed to import shared candidates');
+    } finally {
+      setIsImportingShared(false);
+    }
+  };
+
 const handleInputChange = async (e) => {
   const { name, value, files } = e.target;
 
@@ -1931,6 +1975,8 @@ const handleAddCandidate = async (e) => {
       label: 'Status',
       render: (candidate) => {
         const remark = candidate.remark || '';
+        const skills = candidate.skills || '';
+        const hasTooltip = remark || skills;
         return (
           <div className="flex items-center gap-2">
             <span className={
@@ -1942,14 +1988,24 @@ const handleAddCandidate = async (e) => {
             }>
               {candidate.status}
             </span>
-            {remark && (
+            {hasTooltip && (
               <div className="relative group">
-                <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title="View remark">
+                <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title={skills ? 'View skills / remark' : 'View remark'}>
                   <Info size={16} className="text-gray-400 hover:text-gray-600" />
                 </button>
-                <div className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal">
-                  <div className="font-semibold text-gray-500 mb-1">Remark</div>
-                  <div className="leading-relaxed">{remark}</div>
+                <div className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal">
+                  {skills && (
+                    <>
+                      <div className="font-semibold text-gray-500 mb-1">Skills</div>
+                      <div className="leading-relaxed mb-2">{skills}</div>
+                    </>
+                  )}
+                  {remark && (
+                    <>
+                      <div className="font-semibold text-gray-500 mb-1">Remark</div>
+                      <div className="leading-relaxed">{remark}</div>
+                    </>
+                  )}
                   <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-white"></div>
                 </div>
               </div>
@@ -2257,6 +2313,16 @@ const handleAddCandidate = async (e) => {
               {viewMode === 'shared' && <span className="text-emerald-600"> shared with you by team members</span>}
               {searchQuery && <span> matching &ldquo;{searchQuery}&rdquo;</span>}
             </p>
+            {viewMode === 'shared' && filteredCandidates.some(c => c._isShared) && (
+              <button
+                onClick={handleImportSharedToMineClick}
+                disabled={isImportingShared}
+                className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {isImportingShared ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
+                {isImportingShared ? 'Importing...' : (selectedIds.length > 0 ? `Import ${selectedIds.length} to my candidates` : 'Import all to my candidates')}
+              </button>
+            )}
           </div>
           
           <div className="flex gap-3 items-center">
@@ -4498,6 +4564,36 @@ const handleAddCandidate = async (e) => {
         type={confirmModal.type}
         isLoading={confirmModal.isLoading}
       />
+
+      {/* Import shared candidates: confirm */}
+      {showImportSharedConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setShowImportSharedConfirm(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Import shared candidates</h3>
+            <p className="text-gray-600 mb-6">
+              Import {getIdsToImportShared().length} shared candidate(s) to your database? They will be copied to All Candidates.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowImportSharedConfirm(false)} className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors">Cancel</button>
+              <button onClick={handleImportSharedToMine} disabled={isImportingShared} className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50">Import</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import shared candidates: success */}
+      {importSharedSuccess !== null && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Candidates imported</h3>
+            <p className="text-gray-600 mb-6">{importSharedSuccess.imported} shared candidate(s) have been added to your database.</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => { setImportSharedSuccess(null); }} className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors">Stay here</button>
+              <button onClick={() => { setImportSharedSuccess(null); setViewMode('all'); }} className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors">Go to All Candidates</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Share Candidate Modal - Member Selection */}
       {showShareModal && !showShareConfirmation && (

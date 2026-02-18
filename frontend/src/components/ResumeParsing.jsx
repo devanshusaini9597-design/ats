@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
-import { Upload, FileText, CheckCircle, AlertCircle, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Upload, FileText, CheckCircle, AlertCircle, X, ChevronLeft, ChevronRight, ThumbsUp, ThumbsDown, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Header from './Header';
 import Sidebar from './Sidebar';
 import { BASE_API_URL } from '../config';
 import { authenticatedFetch } from '../utils/fetchUtils';
 import { useToast } from './Toast';
+
+const PARSING_SESSION_KEY = 'resumeParsingSession';
 
 const ResumeParsing = () => {
   const navigate = useNavigate();
@@ -16,6 +18,9 @@ const ResumeParsing = () => {
   const [results, setResults] = useState([]);
   const [error, setError] = useState('');
   const [editingIdx, setEditingIdx] = useState(null);
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'slider'
+  const [currentSlide, setCurrentSlide] = useState(0);
+  const [approvedIdx, setApprovedIdx] = useState(new Set()); // indexes of approved (for slider)
   const [editBuffer, setEditBuffer] = useState({
     name: '',
     email: '',
@@ -27,6 +32,23 @@ const ResumeParsing = () => {
     skills: '',
     education: ''
   });
+
+  // Restore parsing session when returning from Add Candidate (so list doesn't disappear)
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(PARSING_SESSION_KEY);
+      if (raw) {
+        const { results: r, uploadedFiles: f } = JSON.parse(raw);
+        if (Array.isArray(r) && r.length > 0) {
+          setResults(r);
+          setUploadedFiles(Array.isArray(f) ? f : []);
+          setApprovedIdx(new Set(r.map((_, i) => i).filter(i => r[i].success)));
+          toast.success('Previous parsing session restored. You can add more or add all as candidates.');
+        }
+        sessionStorage.removeItem(PARSING_SESSION_KEY);
+      }
+    } catch (_) { /* ignore */ }
+  }, [toast]);
 
   // Handle file selection
   const handleFileSelect = async (event) => {
@@ -215,22 +237,39 @@ const ResumeParsing = () => {
     URL.revokeObjectURL(url);
   };
 
-  // Add single candidate (navigate to add-candidate with prefill)
+  // Add single candidate (navigate to add-candidate with prefill); persist results so they're restored on return
   const addToCandidate = (resultData) => {
+    try {
+      sessionStorage.setItem(PARSING_SESSION_KEY, JSON.stringify({ results, uploadedFiles }));
+    } catch (_) { /* ignore */ }
     localStorage.setItem('parsedResumeData', JSON.stringify(resultData));
     navigate('/add-candidate');
   };
 
   // Add all successfully parsed resumes as candidates at once
   const [addingAll, setAddingAll] = useState(false);
-  const addAllAsCandidates = async () => {
-    const successful = results.filter(r => r.success && r.data).map(r => r.data);
-    if (!successful.length) {
-      toast.error('No successfully parsed resumes to add.');
+  const [confirmAddAllOpen, setConfirmAddAllOpen] = useState(false);
+  const [addSuccessModal, setAddSuccessModal] = useState(null); // { created, skipped, errors }
+  const successfulResults = results.filter(r => r.success && r.data);
+  const approvedDataList = viewMode === 'slider'
+    ? results.filter((r, i) => r.success && r.data && approvedIdx.has(i)).map(r => r.data)
+    : successfulResults.map(r => r.data);
+
+  const openConfirmAddAll = () => {
+    const toAdd = viewMode === 'slider' ? approvedDataList : successfulResults.map(r => r.data);
+    if (!toAdd.length) {
+      toast.error(viewMode === 'slider' ? 'No approved resumes to add. Approve at least one.' : 'No successfully parsed resumes to add.');
       return;
     }
+    setConfirmAddAllOpen(true);
+  };
 
-    const candidates = successful.map(c => ({
+  const addAllAsCandidates = async () => {
+    setConfirmAddAllOpen(false);
+    const toAdd = viewMode === 'slider' ? approvedDataList : successfulResults.map(r => r.data);
+    if (!toAdd.length) return;
+
+    const candidates = toAdd.map(c => ({
       name: c.name || '',
       email: c.email || '',
       contact: c.contact || '',
@@ -254,13 +293,7 @@ const ResumeParsing = () => {
       if (!response.ok) throw new Error(data.message || 'Failed to add candidates');
 
       const { created = 0, skipped = 0, errors: errCount = 0 } = data;
-      let msg = `Added ${created} candidate${created !== 1 ? 's' : ''}.`;
-      if (skipped) msg += ` Skipped ${skipped} (duplicate).`;
-      if (errCount) msg += ` ${errCount} failed (validation).`;
-      toast.success(msg);
-      if (created > 0) {
-        setTimeout(() => navigate('/ats'), 1500);
-      }
+      setAddSuccessModal({ created, skipped, errors: errCount });
     } catch (err) {
       toast.error(err.message || 'Failed to add candidates');
     } finally {
@@ -336,17 +369,37 @@ const ResumeParsing = () => {
               <div className="space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
                   <h2 className="text-xl font-bold text-gray-900">Parsing Results</h2>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex rounded-lg border border-gray-200 p-0.5 bg-gray-100">
+                      <button
+                        onClick={() => { setViewMode('list'); setCurrentSlide(0); }}
+                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${viewMode === 'list' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        List
+                      </button>
+                      <button
+                        onClick={() => {
+                          setViewMode('slider');
+                          setCurrentSlide(0);
+                          setApprovedIdx(new Set(results.map((_, i) => i).filter(i => results[i].success)));
+                        }}
+                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${viewMode === 'slider' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        Slider
+                      </button>
+                    </div>
                     <button
-                      onClick={addAllAsCandidates}
-                      disabled={addingAll || results.filter(r => r.success).length === 0}
+                      onClick={openConfirmAddAll}
+                      disabled={addingAll || (viewMode === 'slider' ? approvedDataList.length === 0 : results.filter(r => r.success).length === 0)}
                       className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
                     >
                       {addingAll ? (
                         <>
-                          <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <Loader2 size={16} className="animate-spin" />
                           Adding...
                         </>
+                      ) : viewMode === 'slider' ? (
+                        <>➕ Add {approvedDataList.length} Approved</>
                       ) : (
                         <>➕ Add All as Candidates</>
                       )}
@@ -360,6 +413,79 @@ const ResumeParsing = () => {
                     </button>
                   </div>
                 </div>
+
+                {/* Slider view: one card + Prev/Next + Approve/Reject */}
+                {viewMode === 'slider' && results.length > 0 && (
+                  <div className="mb-6 bg-white rounded-xl border border-gray-200 p-5">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-sm font-medium text-gray-500">
+                        {currentSlide + 1} of {results.length}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setCurrentSlide(s => Math.max(0, s - 1))}
+                          disabled={currentSlide === 0}
+                          className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <ChevronLeft size={20} />
+                        </button>
+                        <button
+                          onClick={() => setCurrentSlide(s => Math.min(results.length - 1, s + 1))}
+                          disabled={currentSlide === results.length - 1}
+                          className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <ChevronRight size={20} />
+                        </button>
+                      </div>
+                    </div>
+                    {(() => {
+                      const result = results[currentSlide];
+                      const isApproved = approvedIdx.has(currentSlide);
+                      return (
+                        <div className={`border rounded-lg p-5 ${result.success ? 'bg-white border-green-200' : 'bg-red-50 border-red-200'}`}>
+                          <div className="flex items-start justify-between mb-3">
+                            <p className="font-semibold text-gray-900">{result.fileName}</p>
+                            {result.success && (
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => setApprovedIdx(prev => { const n = new Set(prev); n.add(currentSlide); return n; })}
+                                  className={`p-2 rounded-lg ${isApproved ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500 hover:bg-green-50'}`}
+                                  title="Approve (include when adding all)"
+                                >
+                                  <ThumbsUp size={18} />
+                                </button>
+                                <button
+                                  onClick={() => setApprovedIdx(prev => { const n = new Set(prev); n.delete(currentSlide); return n; })}
+                                  className={`p-2 rounded-lg ${!isApproved ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500 hover:bg-red-50'}`}
+                                  title="Reject (exclude when adding all)"
+                                >
+                                  <ThumbsDown size={18} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          {result.success && result.data && (
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                              {['name', 'email', 'contact', 'position'].map(k => (
+                                <div key={k}>
+                                  <span className="text-gray-500 capitalize">{k}:</span>{' '}
+                                  <span className="text-gray-900">{result.data[k] || '—'}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {result.success && result.data && (
+                            <div className="mt-4 pt-4 border-t flex gap-2">
+                              <button onClick={() => addToCandidate(result.data)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+                                Add this one as Candidate
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
 
                 {/* Summary Stats */}
                 <div className="grid grid-cols-3 gap-4 mb-6">
@@ -377,7 +503,8 @@ const ResumeParsing = () => {
                   </div>
                 </div>
 
-                {/* Results Cards */}
+                {/* Results Cards (list view only) */}
+                {viewMode === 'list' && (
                 <div className="space-y-4">
                   {results.map((result, idx) => (
                     <div
@@ -532,6 +659,7 @@ const ResumeParsing = () => {
                     </div>
                   ))}
                 </div>
+                )}
               </div>
             )}
 
@@ -555,6 +683,55 @@ const ResumeParsing = () => {
           </div>
         </main>
       </div>
+
+      {/* Confirm Add All (enterprise-style) */}
+      {confirmAddAllOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4" onClick={() => setConfirmAddAllOpen(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Add candidates to database</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Add {(viewMode === 'slider' ? approvedDataList : successfulResults.map(r => r.data)).length} candidate(s) from the parsed resumes to your All Candidates list?
+            </p>
+            <p className="text-xs text-gray-500 mb-4">Duplicates (same email/phone) will be skipped. You can review them in All Candidates after adding.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmAddAllOpen(false)} className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">
+                Cancel
+              </button>
+              <button onClick={addAllAsCandidates} disabled={addingAll} className="flex-1 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                {addingAll ? <Loader2 size={18} className="animate-spin" /> : null}
+                Add candidates
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success modal after Add All (enterprise-style) */}
+      {addSuccessModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 text-center">
+            <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+              <CheckCircle size={28} className="text-green-600" />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Candidates added</h3>
+            <p className="text-sm text-gray-600 mb-1">{addSuccessModal.created} candidate(s) added to your database.</p>
+            {(addSuccessModal.skipped > 0 || addSuccessModal.errors > 0) && (
+              <p className="text-xs text-gray-500 mb-4">
+                {addSuccessModal.skipped > 0 && `${addSuccessModal.skipped} skipped (duplicate). `}
+                {addSuccessModal.errors > 0 && `${addSuccessModal.errors} failed validation.`}
+              </p>
+            )}
+            <div className="flex gap-3 mt-4">
+              <button onClick={() => { setAddSuccessModal(null); }} className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">
+                Stay here
+              </button>
+              <button onClick={() => { setAddSuccessModal(null); navigate('/ats'); }} className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700">
+                Go to All Candidates
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

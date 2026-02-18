@@ -67,7 +67,8 @@ const CandidateSchema = new mongoose.Schema({
   spoc: { type: String, default: '' },
   source: { type: String, default: '' },
   feedback: { type: String, default: '' }, // ✅ Added feedback field
-  remark: { type: String, default: '' }, // ✅ Remark field (e.g. rejection reason)
+  skills: { type: String, default: '' }, // ✅ Skills (from resume parsing; separate from remark)
+  remark: { type: String, default: '' }, // ✅ Remark field (e.g. rejection reason, notes)
   resume: { type: String, default: '' }, 
   hiredDate: { type: Date },
   statusHistory: [{
