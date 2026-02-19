@@ -1,5 +1,5 @@
 const Source = require('../models/Source');
-const { normalizeText } = require('../utils/textNormalize');
+const { normalizeText, escapeRegex } = require('../utils/textNormalize');
 
 // Get all sources (user's own)
 const getSources = async (req, res) => {
@@ -34,9 +34,18 @@ const createSource = async (req, res) => {
       return res.status(400).json({ message: 'Source name is required' });
     }
 
-    const existingSource = await Source.findOne({ createdBy: req.user.id, name: { $regex: new RegExp(`^${name}$`, 'i') } });
-    if (existingSource) {
+    const existingActive = await Source.findOne({ createdBy: req.user.id, name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') }, isActive: true });
+    if (existingActive) {
       return res.status(400).json({ message: 'Source already exists' });
+    }
+
+    const existingInactive = await Source.findOne({ createdBy: req.user.id, name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') }, isActive: false });
+    if (existingInactive) {
+      existingInactive.isActive = true;
+      existingInactive.description = description?.trim() ?? existingInactive.description;
+      existingInactive.updatedAt = new Date();
+      await existingInactive.save();
+      return res.status(201).json(existingInactive);
     }
 
     const source = new Source({
@@ -49,6 +58,9 @@ const createSource = async (req, res) => {
     res.status(201).json(source);
   } catch (error) {
     console.error('Error creating source:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Source already exists' });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -67,8 +79,9 @@ const updateSource = async (req, res) => {
     if (name) {
       const existingSource = await Source.findOne({
         createdBy: req.user.id,
-        name: { $regex: new RegExp(`^${name}$`, 'i') },
-        _id: { $ne: id }
+        name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
+        _id: { $ne: id },
+        isActive: true
       });
       if (existingSource) {
         return res.status(400).json({ message: 'Source name already exists' });
@@ -90,23 +103,22 @@ const updateSource = async (req, res) => {
     res.json(source);
   } catch (error) {
     console.error('Error updating source:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Source name already exists' });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// Delete a source (soft delete)
+// Delete a source (hard delete from database for this user only)
 const deleteSource = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const source = await Source.findOne({ _id: id, createdBy: req.user.id });
-    if (!source) {
+    const result = await Source.deleteOne({ _id: id, createdBy: req.user.id });
+    if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Source not found' });
     }
-
-    source.isActive = false;
-    source.updatedAt = new Date();
-    await source.save();
 
     res.json({ message: 'Source deleted successfully' });
   } catch (error) {

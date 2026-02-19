@@ -1,5 +1,5 @@
 const Client = require('../models/Client');
-const { normalizeText } = require('../utils/textNormalize');
+const { normalizeText, escapeRegex } = require('../utils/textNormalize');
 
 // Get all clients (user's own)
 const getClients = async (req, res) => {
@@ -34,9 +34,18 @@ const createClient = async (req, res) => {
       return res.status(400).json({ message: 'Client name is required' });
     }
 
-    const existingClient = await Client.findOne({ createdBy: req.user.id, name: { $regex: new RegExp(`^${name}$`, 'i') } });
-    if (existingClient) {
+    const existingActive = await Client.findOne({ createdBy: req.user.id, name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') }, isActive: true });
+    if (existingActive) {
       return res.status(400).json({ message: 'Client already exists' });
+    }
+
+    const existingInactive = await Client.findOne({ createdBy: req.user.id, name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') }, isActive: false });
+    if (existingInactive) {
+      existingInactive.isActive = true;
+      existingInactive.description = description?.trim() ?? existingInactive.description;
+      existingInactive.updatedAt = new Date();
+      await existingInactive.save();
+      return res.status(201).json(existingInactive);
     }
 
     const client = new Client({
@@ -49,6 +58,9 @@ const createClient = async (req, res) => {
     res.status(201).json(client);
   } catch (error) {
     console.error('Error creating client:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Client already exists' });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -67,8 +79,9 @@ const updateClient = async (req, res) => {
     if (name) {
       const existingClient = await Client.findOne({
         createdBy: req.user.id,
-        name: { $regex: new RegExp(`^${name}$`, 'i') },
-        _id: { $ne: id }
+        name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
+        _id: { $ne: id },
+        isActive: true
       });
       if (existingClient) {
         return res.status(400).json({ message: 'Client name already exists' });
@@ -90,23 +103,22 @@ const updateClient = async (req, res) => {
     res.json(client);
   } catch (error) {
     console.error('Error updating client:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Client name already exists' });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// Delete a client (soft delete)
+// Delete a client (hard delete from database for this user only)
 const deleteClient = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const client = await Client.findOne({ _id: id, createdBy: req.user.id });
-    if (!client) {
+    const result = await Client.deleteOne({ _id: id, createdBy: req.user.id });
+    if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Client not found' });
     }
-
-    client.isActive = false;
-    client.updatedAt = new Date();
-    await client.save();
 
     res.json({ message: 'Client deleted successfully' });
   } catch (error) {

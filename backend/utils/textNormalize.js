@@ -8,4 +8,13 @@ const normalizeText = (str) => {
   return str.trim().replace(/\s+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 };
 
-module.exports = { normalizeText };
+/**
+ * Escape special regex characters in a string for use in RegExp
+ * Prevents "Server error" when name contains . [ ] ( ) etc.
+ */
+const escapeRegex = (str) => {
+  if (str == null || typeof str !== 'string') return '';
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
+module.exports = { normalizeText, escapeRegex };
