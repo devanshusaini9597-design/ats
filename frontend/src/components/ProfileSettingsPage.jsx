@@ -5,7 +5,7 @@ import API_URL from '../config';
 import { authenticatedFetch, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
 import Layout from './Layout';
-import { formatByFieldName } from '../utils/textFormatter';
+import { formatNameForInput } from '../utils/textFormatter';
 
 const BASE = API_URL;
 
@@ -18,6 +18,8 @@ const ProfileSettingsPage = () => {
   const [originalProfile, setOriginalProfile] = useState({ name: '', email: '', phone: '' });
   const [isLoadingProfile, setIsLoadingProfile] = useState(true);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [showSaveConfirmModal, setShowSaveConfirmModal] = useState(false);
 
   // Profile picture state
   const [profilePicture, setProfilePicture] = useState('');
@@ -82,16 +84,20 @@ const ProfileSettingsPage = () => {
       toast.error('Enter a valid phone number'); return;
     }
 
+    setShowSaveConfirmModal(false);
     setIsSavingProfile(true);
     try {
       const res = await authenticatedFetch(`${BASE}/api/profile`, {
         method: 'PUT',
-        body: JSON.stringify({ name: profile.name.trim(), phone: profile.phone.trim() })
+        body: JSON.stringify({ name: profile.name.trim(), phone: profile.phone.replace(/\D/g, '').trim() })
       });
       const data = await res.json();
       if (data.success) {
         toast.success('Profile updated successfully');
-        setOriginalProfile({ ...profile, name: profile.name.trim(), phone: profile.phone.trim() });
+        const updated = { ...profile, name: profile.name.trim(), phone: profile.phone.replace(/\D/g, '').trim() };
+        setOriginalProfile(updated);
+        setProfile(updated);
+        setIsEditingProfile(false);
         // Update localStorage + token
         localStorage.setItem('userName', data.user.name);
         if (data.token) localStorage.setItem('token', data.token);
@@ -103,6 +109,11 @@ const ProfileSettingsPage = () => {
     } finally {
       setIsSavingProfile(false);
     }
+  };
+
+  const handleCancelEditProfile = () => {
+    setProfile({ ...originalProfile });
+    setIsEditingProfile(false);
   };
 
   const handleUploadProfilePicture = async (e) => {
@@ -393,12 +404,24 @@ const ProfileSettingsPage = () => {
             {activeSection === 'profile' && (
               <div className="space-y-6">
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-                  <div className="px-6 py-4 border-b border-gray-100">
-                    <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                      <User size={20} className="text-blue-600" />
-                      Personal Information
-                    </h2>
-                    <p className="text-sm text-gray-500 mt-1">Update your personal details</p>
+                  <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                        <User size={20} className="text-blue-600" />
+                        Personal Information
+                      </h2>
+                      <p className="text-sm text-gray-500 mt-1">Update your personal details</p>
+                    </div>
+                    {!isEditingProfile ? (
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingProfile(true)}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-colors"
+                      >
+                        <User size={16} />
+                        Edit Profile
+                      </button>
+                    ) : null}
                   </div>
                   <div className="p-6 space-y-5">
                     {/* Full Name */}
@@ -406,14 +429,20 @@ const ProfileSettingsPage = () => {
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">Full Name</label>
                       <div className="relative">
                         <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="text"
-                          value={profile.name}
-                          onChange={(e) => setProfile(prev => ({ ...prev, name: formatByFieldName('name', e.target.value) }))}
-                          onBlur={() => setProfile(prev => ({ ...prev, name: prev.name.trim() }))}
-                          className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors text-sm"
-                          placeholder="Enter your full name"
-                        />
+                        {isEditingProfile ? (
+                          <input
+                            type="text"
+                            value={profile.name}
+                            onChange={(e) => setProfile(prev => ({ ...prev, name: formatNameForInput(e.target.value) }))}
+                            onBlur={() => setProfile(prev => ({ ...prev, name: prev.name.trim() }))}
+                            className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors text-sm"
+                            placeholder="Enter your full name"
+                          />
+                        ) : (
+                          <div className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 text-sm">
+                            {profile.name || '—'}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -439,36 +468,53 @@ const ProfileSettingsPage = () => {
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">Phone Number</label>
                       <div className="relative">
                         <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="tel"
-                          value={profile.phone}
-                          onChange={(e) => setProfile(prev => ({ ...prev, phone: e.target.value }))}
-                          className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors text-sm"
-                          placeholder="Enter your phone number"
-                        />
+                        {isEditingProfile ? (
+                          <input
+                            type="tel"
+                            value={profile.phone}
+                            onChange={(e) => setProfile(prev => ({ ...prev, phone: e.target.value.replace(/\D/g, '') }))}
+                            className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors text-sm"
+                            placeholder="Enter your phone number"
+                          />
+                        ) : (
+                          <div className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 text-sm">
+                            {profile.phone || '—'}
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    {/* Save Button */}
-                    <div className="flex items-center justify-between pt-2">
-                      {hasProfileChanges && (
-                        <p className="text-sm text-amber-600 flex items-center gap-1">
-                          <AlertCircle size={14} /> You have unsaved changes
-                        </p>
-                      )}
-                      <button
-                        onClick={handleSaveProfile}
-                        disabled={!hasProfileChanges || isSavingProfile}
-                        className={`ml-auto flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                          hasProfileChanges
-                            ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm hover:shadow'
-                            : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                        }`}
-                      >
-                        {isSavingProfile ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                        {isSavingProfile ? 'Saving...' : 'Save Changes'}
-                      </button>
-                    </div>
+                    {/* Edit mode actions */}
+                    {isEditingProfile && (
+                      <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                        {hasProfileChanges && (
+                          <p className="text-sm text-amber-600 flex items-center gap-1">
+                            <AlertCircle size={14} /> You have unsaved changes
+                          </p>
+                        )}
+                        <div className="ml-auto flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCancelEditProfile}
+                            className="px-4 py-2.5 rounded-lg text-sm font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => hasProfileChanges && setShowSaveConfirmModal(true)}
+                            disabled={!hasProfileChanges || isSavingProfile}
+                            className={`flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                              hasProfileChanges
+                                ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm hover:shadow'
+                                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                            }`}
+                          >
+                            {isSavingProfile ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                            {isSavingProfile ? 'Saving...' : 'Save Changes'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -648,7 +694,7 @@ const ProfileSettingsPage = () => {
                             <Database size={20} className="text-white" />
                           </div>
                           <div>
-                            <p className="text-2xl font-bold text-blue-900">{stats.totalCandidates}</p>
+                            <p className="text-sm font-bold text-blue-900">{stats.totalCandidates}</p>
                             <p className="text-xs text-blue-600">Total Candidates</p>
                           </div>
                         </div>
@@ -761,6 +807,43 @@ const ProfileSettingsPage = () => {
           </div>
         </div>
       </div>
+
+      {/* Save Profile Confirmation Modal */}
+      {showSaveConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                  <Save size={24} className="text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Save changes?</h3>
+                  <p className="text-sm text-gray-500 mt-1">Your name and phone number will be updated.</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowSaveConfirmModal(false)}
+                  className="px-4 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveProfile}
+                  disabled={isSavingProfile}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {isSavingProfile ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                  Save changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Password Recovery Modal */}
       {showRecoveryModal && (
