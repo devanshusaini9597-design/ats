@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Edit, Trash2, Search } from 'lucide-react';
+import { ArrowLeft, Plus, Edit, Trash2, Search, ArrowUpDown } from 'lucide-react';
 import Layout from './Layout';
 import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
@@ -19,18 +19,20 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
   const [formData, setFormData] = useState({ name: '', description: '' });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [viewAllMode, setViewAllMode] = useState(false);
+  const [addingId, setAddingId] = useState(null);
+  const [sortBy, setSortBy] = useState('name');
+  const [sortOrder, setSortOrder] = useState('asc');
 
   useEffect(() => {
     fetchData();
-  }, [apiEndpoint]);
+  }, [apiEndpoint, viewAllMode]);
 
   const fetchData = async () => {
     try {
       setIsLoading(true);
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${BASE_API_URL}${apiEndpoint}`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
+      const url = viewAllMode ? `${BASE_API_URL}${apiEndpoint}/all` : `${BASE_API_URL}${apiEndpoint}`;
+      const response = await authenticatedFetch(url);
 
       if (isUnauthorized(response)) {
         handleUnauthorized();
@@ -45,7 +47,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
       }
     } catch (error) {
       console.error('Error fetching data:', error);
-      if (error.message !== 'Failed to fetch') toast.error('Error fetching data');
+      toast.error('Error fetching data');
     } finally {
       setIsLoading(false);
     }
@@ -66,17 +68,13 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     }
 
     try {
-      const token = localStorage.getItem('token');
       const url = editingItem
         ? `${BASE_API_URL}${apiEndpoint}/${editingItem._id}`
         : `${BASE_API_URL}${apiEndpoint}`;
 
-      const response = await fetch(url, {
+      const response = await authenticatedFetch(url, {
         method: editingItem ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formattedData)
       });
 
@@ -101,6 +99,44 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     }
   };
 
+  const handleAddToMyList = async (item) => {
+    if (!item || addingId) return;
+    const idOrKey = item._id ?? item.addKey;
+    setAddingId(idOrKey);
+    try {
+      const payload = {
+        name: formatByFieldName('name', item.name || ''),
+        description: formatByFieldName('description', item.description || '')
+      };
+      const response = await authenticatedFetch(`${BASE_API_URL}${apiEndpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (isUnauthorized(response)) {
+        handleUnauthorized();
+        return;
+      }
+      if (response.ok) {
+        const createdItem = await response.json();
+        setData(prev => [...prev, { ...createdItem, isMine: true }]);
+        toast.success(`Added to your list`);
+      } else {
+        const err = await response.json().catch(() => ({}));
+        if (response.status === 400 && (err.message || '').toLowerCase().includes('already exists')) {
+          toast.warning('Already in your list');
+        } else {
+          toast.error(err.message || 'Could not add');
+        }
+      }
+    } catch (error) {
+      console.error('Error adding to list:', error);
+      toast.error('Could not add to your list');
+    } finally {
+      setAddingId(null);
+    }
+  };
+
   const handleDeleteConfirm = (item) => {
     setDeleteConfirm(item);
   };
@@ -109,10 +145,8 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     if (!deleteConfirm) return;
     setIsDeleting(true);
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${BASE_API_URL}${apiEndpoint}/${deleteConfirm._id}`, {
-        method: 'DELETE',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      const response = await authenticatedFetch(`${BASE_API_URL}${apiEndpoint}/${deleteConfirm._id}`, {
+        method: 'DELETE'
       });
 
       if (isUnauthorized(response)) {
@@ -135,10 +169,52 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     }
   };
 
-  const filteredData = data.filter(item =>
-    item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (item.description && item.description.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  // In "View all" mode, show one row per unique name (dedupe across users)
+  const displayList = useMemo(() => {
+    if (!viewAllMode) return data;
+    const norm = (name) => (name || '').trim().toLowerCase();
+    const byKey = {};
+    data.forEach((item) => {
+      const key = norm(item.name);
+      if (!key) return;
+      if (!byKey[key]) {
+        byKey[key] = {
+          addKey: `add-${key}`,
+          name: item.name,
+          description: item.description,
+          isMine: false,
+          myItem: null,
+          isActive: item.isActive
+        };
+      }
+      const g = byKey[key];
+      if (item.isMine) {
+        g.isMine = true;
+        g.myItem = item;
+        g.name = item.name;
+        g.description = item.description != null ? item.description : g.description;
+      }
+    });
+    return Object.values(byKey).map(g => ({
+      ...g,
+      _id: g.myItem?._id,
+      isActive: g.myItem?.isActive ?? g.isActive
+    }));
+  }, [data, viewAllMode]);
+
+  const filteredData = useMemo(() => {
+    const list = displayList.filter(item =>
+      (item.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (item.description && String(item.description).toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+    const key = sortBy === 'description' ? 'description' : 'name';
+    return [...list].sort((a, b) => {
+      const va = (a[key] || '').toString().toLowerCase();
+      const vb = (b[key] || '').toString().toLowerCase();
+      const cmp = va.localeCompare(vb, undefined, { sensitivity: 'base' });
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
+  }, [displayList, searchTerm, sortBy, sortOrder]);
 
   const openModal = (item = null) => {
     setEditingItem(item);
@@ -169,10 +245,61 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                 <p className="text-sm text-slate-600 mt-1">Add, edit, and manage {title.toLowerCase()}</p>
               </div>
             </div>
+          </div>
+        </div>
 
+        {/* Tabs (left) + Search & Add New (right) - enterprise style */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-0 rounded-lg border-2 border-slate-200 bg-slate-50/50 p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewAllMode(false)}
+              className={`rounded-md px-4 py-2 text-sm font-medium transition-all ${!viewAllMode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              Show only mine
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewAllMode(true)}
+              className={`rounded-md px-4 py-2 text-sm font-medium transition-all ${viewAllMode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              View all
+            </button>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-600 whitespace-nowrap">Sort by:</span>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="rounded-lg border-2 border-slate-200 bg-white py-2 pr-8 pl-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 cursor-pointer"
+              >
+                <option value="name">Name</option>
+                <option value="description">Description</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
+                className="flex items-center gap-1 px-2 py-2 rounded-lg border-2 border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                title={sortOrder === 'asc' ? 'Ascending (click for descending)' : 'Descending (click for ascending)'}
+              >
+                <ArrowUpDown size={16} />
+                {sortOrder === 'asc' ? 'A→Z' : 'Z→A'}
+              </button>
+            </div>
+            <div className="relative w-64 sm:w-72">
+              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder={`Search ${title.toLowerCase()}...`}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full rounded-lg border-2 border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+              />
+            </div>
             <button
               onClick={() => openModal()}
-              className="px-6 py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg font-semibold hover:from-blue-600 hover:to-indigo-700 transition-all transform hover:scale-105 flex items-center gap-2 text-sm"
+              className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-blue-600 hover:to-indigo-700"
             >
               <Plus size={18} />
               Add New
@@ -180,19 +307,11 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
           </div>
         </div>
 
-        {/* Search */}
-        <div className="mb-6">
-          <div className="relative max-w-md">
-            <Search size={20} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              placeholder={`Search ${title.toLowerCase()}...`}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
-            />
-          </div>
-        </div>
+        {viewAllMode && (
+          <p className="mb-4 text-sm text-slate-600 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
+            One row per unique name. You can edit or delete only the ones you added. Use <strong>+ Add to my list</strong> to copy others’ entries.
+          </p>
+        )}
 
         {/* Data Table */}
         <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
@@ -207,6 +326,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                 <thead className="bg-slate-50">
                   <tr>
                     <th className="px-6 py-4 text-left text-sm font-bold text-slate-700">Name</th>
+                    {viewAllMode && <th className="px-6 py-4 text-left text-sm font-bold text-slate-700">Added by</th>}
                     <th className="px-6 py-4 text-left text-sm font-bold text-slate-700">Description</th>
                     <th className="px-6 py-4 text-left text-sm font-bold text-slate-700">Status</th>
                     <th className="px-6 py-4 text-left text-sm font-bold text-slate-700">Actions</th>
@@ -215,44 +335,72 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                 <tbody className="divide-y divide-slate-200">
                   {filteredData.length === 0 ? (
                     <tr>
-                      <td colSpan="4" className="px-6 py-8 text-center text-slate-500">
+                      <td colSpan={viewAllMode ? 5 : 4} className="px-6 py-8 text-center text-slate-500">
                         {searchTerm ? 'No matching items found' : `No ${title.toLowerCase()} found`}
                       </td>
                     </tr>
                   ) : (
-                    filteredData.map((item) => (
-                      <tr key={item._id} className="hover:bg-slate-50">
-                        <td className="px-6 py-4 text-sm text-slate-900 font-medium">{item.name}</td>
-                        <td className="px-6 py-4 text-sm text-slate-600">{item.description || '-'}</td>
-                        <td className="px-6 py-4 text-sm">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            item.isActive
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}>
-                            {item.isActive ? 'Active' : 'Inactive'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => openModal(item)}
-                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                              title="Edit"
-                            >
-                              <Edit size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteConfirm(item)}
-                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="Delete"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                    filteredData.map((item) => {
+                      const isMine = viewAllMode && item.isMine === true;
+                      const canEditDelete = !viewAllMode || isMine;
+                      const rowKey = item._id || item.addKey || item.name;
+                      const editDeleteItem = (viewAllMode && item.myItem) ? item.myItem : item;
+                      return (
+                        <tr key={rowKey} className={`hover:bg-slate-50 ${viewAllMode && !isMine ? 'bg-slate-50/50' : ''}`}>
+                          <td className="px-6 py-4 text-sm text-slate-900 font-medium">{item.name}</td>
+                          {viewAllMode && (
+                            <td className="px-6 py-4 text-sm">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${isMine ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-700'}`}>
+                                {isMine ? 'You' : 'Others'}
+                              </span>
+                            </td>
+                          )}
+                          <td className="px-6 py-4 text-sm text-slate-600">{item.description || '-'}</td>
+                          <td className="px-6 py-4 text-sm">
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              item.isActive !== false ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {item.isActive !== false ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-sm">
+                            {canEditDelete ? (
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => openModal(editDeleteItem)}
+                                  className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                  title="Edit"
+                                >
+                                  <Edit size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteConfirm(editDeleteItem)}
+                                  className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="Delete"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            ) : viewAllMode ? (
+                              <button
+                                onClick={() => handleAddToMyList(item)}
+                                disabled={addingId === (item._id ?? item.addKey)}
+                                className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+                                title="Add to my list"
+                              >
+                                {addingId === (item._id ?? item.addKey) ? (
+                                  <span className="inline-block w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
+                                ) : (
+                                  <Plus size={16} />
+                                )}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -285,7 +433,7 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                   <label className="block text-sm font-bold text-slate-700 mb-2">Description</label>
                   <textarea
                     value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    onChange={(e) => setFormData({ ...formData, description: formatNameForInput(e.target.value) })}
                     placeholder={`Enter ${title.slice(0, -1).toLowerCase()} description (optional)`}
                     rows="3"
                     className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"

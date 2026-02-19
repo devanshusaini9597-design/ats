@@ -12,6 +12,19 @@ const getClients = async (req, res) => {
   }
 };
 
+// Get all clients across company (all users)
+const getAllClients = async (req, res) => {
+  try {
+    const clients = await Client.find({ isActive: true }).sort({ name: 1 }).lean();
+    const userIdStr = req.user?.id?.toString();
+    const withOwner = clients.map(c => ({ ...c, isMine: c.createdBy?.toString() === userIdStr }));
+    res.json(withOwner);
+  } catch (error) {
+    console.error('Error fetching all clients:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Create a new client
 const createClient = async (req, res) => {
   try {
@@ -104,6 +117,7 @@ const deleteClient = async (req, res) => {
 
 module.exports = {
   getClients,
+  getAllClients,
   createClient,
   updateClient,
   deleteClient

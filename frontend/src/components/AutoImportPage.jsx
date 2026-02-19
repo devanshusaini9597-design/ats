@@ -6,6 +6,8 @@ import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
 import BASE_API_URL from '../config';
+import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
+import { formatNameForInput } from '../utils/textFormatter';
 
 const DRAFT_KEY = 'autoImportDraft';
 
@@ -30,6 +32,14 @@ const AutoImportPage = () => {
   const [stats, setStats] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false });
   const [importSuccessModal, setImportSuccessModal] = useState(null);
+  const [isSavingToPending, setIsSavingToPending] = useState(false);
+  const [pendingReviewConfirmModal, setPendingReviewConfirmModal] = useState({ isOpen: false });
+  const [readyRecordsImported, setReadyRecordsImported] = useState(false);
+  const [reviewBlockedSentToPending, setReviewBlockedSentToPending] = useState(false);
+  const [positions, setPositions] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [sources, setSources] = useState([]);
+  const [editFormErrors, setEditFormErrors] = useState({});
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -59,6 +69,23 @@ const AutoImportPage = () => {
         }
       }
     } catch { /* ignore corrupt data */ }
+  }, []);
+
+  // Fetch positions, clients, sources for edit modal dropdowns
+  useEffect(() => {
+    const fetchMaster = async () => {
+      try {
+        const [pRes, cRes, sRes] = await Promise.all([
+          authenticatedFetch(`${BASE_API_URL}/api/positions`),
+          authenticatedFetch(`${BASE_API_URL}/api/clients`),
+          authenticatedFetch(`${BASE_API_URL}/api/sources`)
+        ]);
+        if (pRes.ok) setPositions(await pRes.json().catch(() => []));
+        if (cRes.ok) setClients(await cRes.json().catch(() => []));
+        if (sRes.ok) setSources(await sRes.json().catch(() => []));
+      } catch (_) {}
+    };
+    fetchMaster();
   }, []);
 
   // Save draft to localStorage whenever reviewData changes
@@ -128,11 +155,16 @@ const AutoImportPage = () => {
       const uploadData = new FormData();
       uploadData.append('file', file);
 
+      const uploadUrl = `${BASE_API_URL}/candidates/bulk-upload-auto`;
+      if (import.meta.env.DEV) {
+        console.log('Auto Import: uploading to', uploadUrl);
+      }
+
       // Phase 1: Upload file with XHR for real upload progress
       const token = localStorage.getItem('token');
       const uploadResult = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${BASE_API_URL}/candidates/bulk-upload-auto`);
+        xhr.open('POST', uploadUrl);
         if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
         xhr.timeout = 600000; // 10 min for large files (15k+ rows)
 
@@ -155,7 +187,13 @@ const AutoImportPage = () => {
           }
           resolve(xhr.responseText);
         };
-        xhr.onerror = () => reject(new Error('Network error. Check your connection. For 15k+ rows, processing may take several minutes.'));
+        xhr.onerror = () => {
+          const isLocal = BASE_API_URL.includes('localhost');
+          const hint = isLocal
+            ? ' If testing locally, ensure the backend is running (e.g. npm start in backend folder at http://localhost:5000).'
+            : ' For large files, processing may take several minutes.';
+          reject(new Error(`Network error. Could not reach the server.${hint}`));
+        };
         xhr.ontimeout = () => reject(new Error('Upload timed out. For very large files, try splitting into smaller batches (e.g. 5k rows each).'));
         xhr.send(uploadData);
       });
@@ -195,32 +233,12 @@ const AutoImportPage = () => {
       if (data.success && data.results) {
         setReviewData(data.results);
         setStats(data.stats);
+        setReadyRecordsImported(false);
+        setReviewBlockedSentToPending(false);
         setReviewFilter('ready');
         setCurrentPage(1);
         setSearchQuery('');
         toast.success(`Validation complete! Ready: ${data.stats.ready}, Review: ${data.stats.review}, Blocked: ${data.stats.blocked}`);
-
-        // Auto-save review & blocked records to pending collection
-        const pendingRecords = [
-          ...(data.results.review || []).map(r => ({ ...r, category: 'review' })),
-          ...(data.results.blocked || []).map(r => ({ ...r, category: 'blocked' }))
-        ];
-        if (pendingRecords.length > 0) {
-          authenticatedFetch(`${BASE_API_URL}/candidates/pending/save`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ records: pendingRecords, fileName: file.name })
-          })
-            .then(async (res) => {
-              if (res.ok) {
-                const data = await res.json().catch(() => ({}));
-                toast.success(`${pendingRecords.length} review/blocked records saved to Pending Review.`);
-              }
-            })
-            .catch((err) => {
-              console.warn('Pending save failed:', err);
-              toast.error('Could not save review/blocked to Pending Review. You can still import ready records and save pending later.');
-            });
-        }
       } else {
         throw new Error(data.message || 'Failed to process file');
       }
@@ -285,14 +303,10 @@ const AutoImportPage = () => {
     const readyCount = reviewData.ready?.length || 0;
     if (readyCount === 0) { toast.warning('No ready records to import'); return; }
 
-    const reviewCount = reviewData.review?.length || 0;
-    const blockedCount = reviewData.blocked?.length || 0;
-    const pendingCount = reviewCount + blockedCount;
-
     setConfirmModal({
       isOpen: true, type: 'success',
       title: 'Import Ready Records',
-      message: `Import ${readyCount} ready record${readyCount !== 1 ? 's' : ''} to the database?${pendingCount > 0 ? `\n\n${reviewCount} review + ${blockedCount} blocked records will be saved to "Pending Review" for manual fixes.` : ''}`,
+      message: `Import ${readyCount} ready record${readyCount !== 1 ? 's' : ''} to the database?`,
       confirmText: `Import ${readyCount} Ready Record${readyCount !== 1 ? 's' : ''}`,
       onConfirm: performImport
     });
@@ -313,7 +327,8 @@ const AutoImportPage = () => {
       if (!response.ok) throw new Error(result.message || 'Import failed');
 
       const pendingCount = (reviewData.review?.length || 0) + (reviewData.blocked?.length || 0);
-      toast.success(`Imported ${result.imported} ready records!${pendingCount > 0 ? ` ${pendingCount} review/blocked records are in Pending Review.` : ''}`);
+      setReadyRecordsImported(true);
+      toast.success(`Imported ${result.imported} ready records!${pendingCount > 0 ? ' Use "Send Review & Blocked to Pending Review" to save the rest.' : ''}`);
       setImportSuccessModal({ imported: result.imported, pendingCount });
     } catch (error) { toast.error('Import error: ' + error.message); }
     finally { setIsImporting(false); }
@@ -328,19 +343,115 @@ const AutoImportPage = () => {
     navigate('/ats');
   };
 
+  // Send Review & Blocked records to Pending Review (with confirmation)
+  const handleSendToPendingReviewClick = () => {
+    if (!reviewData) return;
+    const reviewCount = reviewData.review?.length || 0;
+    const blockedCount = reviewData.blocked?.length || 0;
+    const total = reviewCount + blockedCount;
+    if (total === 0) {
+      toast.warning('No review or blocked records to send.');
+      return;
+    }
+    setPendingReviewConfirmModal({
+      isOpen: true,
+      reviewCount,
+      blockedCount,
+      total
+    });
+  };
+
+  const handleSendToPendingReviewConfirm = async () => {
+    setPendingReviewConfirmModal(prev => ({ ...prev, isOpen: false }));
+    if (!reviewData) return;
+    const pendingRecords = [
+      ...(reviewData.review || []).map(r => ({ ...r, category: 'review' })),
+      ...(reviewData.blocked || []).map(r => ({ ...r, category: 'blocked' }))
+    ];
+    if (pendingRecords.length === 0) return;
+    setIsSavingToPending(true);
+    try {
+      const res = await authenticatedFetch(`${BASE_API_URL}/candidates/pending/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: pendingRecords, fileName })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setReviewBlockedSentToPending(true);
+        setReviewData(prev => prev ? { ...prev, review: [], blocked: [] } : prev);
+        setReviewFilter('ready');
+        setCurrentPage(1);
+        toast.success(`${data.count ?? pendingRecords.length} records saved to Pending Review. You can review them on the Pending Review page.`);
+      } else {
+        toast.error(data.message || 'Could not save to Pending Review.');
+      }
+    } catch (err) {
+      console.warn('Pending save failed:', err);
+      toast.error('Could not save to Pending Review. Check your connection.');
+    } finally {
+      setIsSavingToPending(false);
+    }
+  };
+
+  const validateEditForm = (record) => {
+    const err = {};
+    const name = (record?.name || '').trim();
+    if (!name) err.name = 'Name is required';
+    else if (name.length < 2) err.name = 'Name must be at least 2 characters';
+    else if (!/^[a-zA-Z\s.'\-]+$/.test(name)) err.name = 'Name can only contain letters, spaces, hyphens';
+
+    const email = (record?.email || '').trim().toLowerCase();
+    if (!email) err.email = 'Email is required';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) err.email = 'Please enter a valid email address';
+
+    const contact = (record?.contact || '').trim().replace(/\D/g, '');
+    if (!contact) err.contact = 'Contact number is required';
+    else if (contact.length < 10) err.contact = 'Enter a valid 10-digit mobile number';
+
+    if (!(record?.companyName || '').trim()) err.companyName = 'Company is required';
+    if (!(record?.ctc || '').trim()) err.ctc = 'Current CTC is required';
+
+    setEditFormErrors(err);
+    return Object.keys(err).length === 0;
+  };
+
   const handleSaveEditedRecord = async () => {
     if (!editingRow) return;
+    const recordData = { ...(editingRow.original || {}), ...(editingRow.fixed || {}) };
+    if (!validateEditForm(recordData)) {
+      toast.warning('Please fix the errors before saving');
+      return;
+    }
+    const payload = {
+      name: (recordData.name || '').trim(),
+      email: (recordData.email || '').trim().toLowerCase(),
+      contact: (recordData.contact || '').trim(),
+      position: recordData.position || '',
+      companyName: (recordData.companyName || '').trim(),
+      location: (recordData.location || '').trim(),
+      ctc: recordData.ctc || '',
+      expectedCtc: recordData.expectedCtc || '',
+      experience: recordData.experience != null && recordData.experience !== '' ? String(recordData.experience) : '',
+      noticePeriod: recordData.noticePeriod || '',
+      status: recordData.status || 'Applied',
+      source: recordData.source || '',
+      client: recordData.client || '',
+      spoc: (recordData.spoc || '').trim(),
+      remark: (recordData.remark || '').trim(),
+      date: recordData.date || ''
+    };
     try {
-      const recordData = editingRow.fixed || editingRow.original || editingRow;
-      const candidateName = recordData.name || 'Candidate';
+      const candidateName = payload.name || 'Candidate';
       const rowIndexToRemove = editingRow.rowIndex;
       const response = await authenticatedFetch(`${BASE_API_URL}/candidates/import-reviewed`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ readyRecords: [recordData], reviewRecords: [] })
+        body: JSON.stringify({ readyRecords: [payload], reviewRecords: [] })
       });
       if (!response.ok) throw new Error('Failed to import');
       await response.json();
       setEditingRow(null);
+      setEditFormErrors({});
       setReviewData(prev => {
         if (!prev) return prev;
         const filterRecord = (r) => r.rowIndex !== rowIndexToRemove;
@@ -372,6 +483,7 @@ const AutoImportPage = () => {
       confirmText: 'Clear Draft',
       onConfirm: () => {
         setReviewData(null); setStats(null); setEditingRow(null); setFileName(''); setCurrentPage(1); setSearchQuery('');
+        setReadyRecordsImported(false); setReviewBlockedSentToPending(false);
         localStorage.removeItem(DRAFT_KEY);
         setConfirmModal({ isOpen: false });
       }
@@ -557,10 +669,17 @@ const AutoImportPage = () => {
                     {showOriginals ? <EyeOff size={12} /> : <Eye size={12} />}
                     {showOriginals ? 'Hide' : 'Show'} Original Values
                   </button>
-                  <button onClick={handleImportAll} disabled={isImporting || (reviewData.ready?.length || 0) === 0}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-semibold hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {((reviewData.review?.length || 0) + (reviewData.blocked?.length || 0)) > 0 && (
+                    <button onClick={handleSendToPendingReviewClick} disabled={isSavingToPending || reviewBlockedSentToPending}
+                      className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer">
+                      {isSavingToPending ? <Loader2 size={14} className="animate-spin" /> : <ArrowRightLeft size={14} />}
+                      {reviewBlockedSentToPending ? 'Sent to Pending Review' : isSavingToPending ? 'Saving...' : `Send Review & Blocked to Pending Review`}
+                    </button>
+                  )}
+                  <button onClick={handleImportAll} disabled={isImporting || (reviewData.ready?.length || 0) === 0 || readyRecordsImported}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-semibold hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer">
                     {isImporting ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                    {isImporting ? 'Importing...' : `Import ${reviewData.ready?.length || 0} Ready Records`}
+                    {readyRecordsImported ? 'Imported' : isImporting ? 'Importing...' : `Import ${reviewData.ready?.length || 0} Ready Records`}
                   </button>
                 </div>
               </div>
@@ -599,7 +718,7 @@ const AutoImportPage = () => {
                   <table className="w-full border-collapse text-xs">
                     <thead className="sticky top-0 z-10">
                       <tr className="bg-gray-50 border-b border-gray-200">
-                        {['#', 'Name', 'Email', 'Contact', 'Position', 'Company', 'CTC', 'Exp CTC', 'Location', 'Exp', 'NP', 'Status', 'Source', 'SPOC', 'Remark', ...(searchQuery ? ['Cat.'] : []), 'Confidence', 'Actions'].map(h => (
+                        {['#', 'Actions', 'Name', 'Email', 'Contact', 'Position', 'Company', 'CTC', 'Exp CTC', 'Location', 'Exp', 'NP', 'Status', 'Source', 'SPOC', 'Remark', ...(searchQuery ? ['Cat.'] : []), 'Confidence'].map(h => (
                           <th key={h} className="px-3 py-2.5 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
@@ -612,6 +731,11 @@ const AutoImportPage = () => {
                           <React.Fragment key={`${row.rowIndex}-${idx}`}>
                             <tr className={`hover:bg-gray-50/60 transition ${cat === 'ready' ? 'bg-green-50/20' : cat === 'review' ? 'bg-amber-50/20' : 'bg-red-50/20'}`}>
                               <td className="px-3 py-2 text-gray-400 font-mono">{row.rowIndex || '-'}</td>
+                              <td className="px-3 py-2">
+                                <button onClick={() => setEditingRow(row)} className="flex items-center gap-1 px-2 py-1 text-[10px] bg-blue-600 text-white rounded hover:bg-blue-700 transition font-medium">
+                                  <Edit2 size={10} /> Edit
+                                </button>
+                              </td>
                               <td className="px-3 py-2 font-semibold text-gray-900 max-w-[140px] truncate">{f.name || '-'}</td>
                               <td className="px-3 py-2 text-gray-600 max-w-[180px] truncate">{f.email || '-'}</td>
                               <td className="px-3 py-2 text-gray-600">{f.contact || f.phone || '-'}</td>
@@ -632,16 +756,12 @@ const AutoImportPage = () => {
                                   {row.validation?.confidence || 0}%
                                 </span>
                               </td>
-                              <td className="px-3 py-2">
-                                <button onClick={() => setEditingRow(row)} className="flex items-center gap-1 px-2 py-1 text-[10px] bg-blue-600 text-white rounded hover:bg-blue-700 transition font-medium">
-                                  <Edit2 size={10} /> Edit
-                                </button>
-                              </td>
                             </tr>
                             {/* Original values row */}
                             {showOriginals && (
                               <tr className="bg-slate-50/80 border-b border-slate-100">
                                 <td className="px-3 py-1.5 text-[10px] text-slate-400 font-medium">orig</td>
+                                <td></td>
                                 {['name', 'email', 'contact', 'position', 'companyName', 'ctc', 'expectedCtc', 'location', 'experience', 'noticePeriod', 'status', 'source', 'spoc', 'remark'].map(field => {
                                   const origVal = getOriginalValue(row, field);
                                   const fixedVal = String(f[field] || '');
@@ -653,7 +773,6 @@ const AutoImportPage = () => {
                                   );
                                 })}
                                 {searchQuery && <td></td>}
-                                <td></td>
                                 <td></td>
                               </tr>
                             )}
@@ -705,53 +824,124 @@ const AutoImportPage = () => {
           )}
         </div>
 
-        {/* EDIT RECORD MODAL */}
+        {/* EDIT RECORD MODAL - same fields/dropdowns/validations as Add Candidate & Pending Review */}
         {editingRow && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 sticky top-0 bg-white z-10">
                 <h3 className="text-lg font-bold text-gray-900">Edit Record - Row {editingRow.rowIndex}</h3>
-                <button onClick={() => setEditingRow(null)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"><X size={18} className="text-gray-500" /></button>
+                <button onClick={() => { setEditingRow(null); setEditFormErrors({}); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"><X size={18} className="text-gray-500" /></button>
               </div>
 
               <div className="p-6">
-                {/* Field editor with original values */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-5">
                   {[
-                    { field: 'name', label: 'Name' }, { field: 'email', label: 'Email' }, { field: 'contact', label: 'Contact' },
-                    { field: 'position', label: 'Position' }, { field: 'experience', label: 'Experience' }, { field: 'ctc', label: 'CTC (LPA)' },
-                    { field: 'expectedCtc', label: 'Expected CTC' }, { field: 'noticePeriod', label: 'Notice Period' }, { field: 'companyName', label: 'Company' },
-                    { field: 'location', label: 'Location' }, { field: 'client', label: 'Client' }, { field: 'source', label: 'Source' },
-                    { field: 'spoc', label: 'SPOC' }, { field: 'date', label: 'Date', type: 'date' }, { field: 'status', label: 'Status', type: 'select' },
-                    { field: 'remark', label: 'Remark' }
+                    { field: 'name', label: 'Name', type: 'text' },
+                    { field: 'email', label: 'Email', type: 'email' },
+                    { field: 'contact', label: 'Contact', type: 'text' },
+                    { field: 'position', label: 'Position', type: 'select-position' },
+                    { field: 'experience', label: 'Experience', type: 'select-experience' },
+                    { field: 'ctc', label: 'CTC (LPA)', type: 'select-ctc' },
+                    { field: 'expectedCtc', label: 'Expected CTC', type: 'select-ctc' },
+                    { field: 'noticePeriod', label: 'Notice Period', type: 'select-np' },
+                    { field: 'companyName', label: 'Company', type: 'text' },
+                    { field: 'location', label: 'Location', type: 'text' },
+                    { field: 'client', label: 'Client', type: 'select-client' },
+                    { field: 'source', label: 'Source', type: 'select-source' },
+                    { field: 'spoc', label: 'SPOC', type: 'text' },
+                    { field: 'date', label: 'Date', type: 'date' },
+                    { field: 'status', label: 'Status', type: 'select-status' },
+                    { field: 'remark', label: 'Remark', type: 'text' }
                   ].map(({ field, label, type }) => {
                     const origVal = getOriginalValue(editingRow, field);
-                    const fixedVal = editingRow.fixed?.[field] || '';
-                    const origStr = origVal ? String(origVal).trim() : '';
+                    const fixedVal = editingRow.fixed?.[field] ?? origVal ?? '';
+                    const origStr = origVal != null ? String(origVal).trim() : '';
                     const fixedStr = String(fixedVal).trim();
                     const isDifferent = origStr && fixedStr && origStr.toLowerCase() !== fixedStr.toLowerCase();
                     const hasOriginal = origStr && origStr !== '-';
+                    const err = editFormErrors[field];
+                    const inputClass = `w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none ${err ? 'border-red-400 bg-red-50/50' : isDifferent ? 'border-orange-300 bg-orange-50/30' : 'border-gray-300'}`;
+                    const updateFixed = (value) => {
+                      const isFormattedText = ['name', 'companyName', 'location', 'spoc', 'remark'].includes(field);
+                      const v = type === 'email' ? value : (isFormattedText ? formatNameForInput(value) : value);
+                      setEditingRow(prev => ({ ...prev, fixed: { ...prev.fixed, [field]: v } }));
+                      setEditFormErrors(prev => ({ ...prev, [field]: '' }));
+                    };
+                    const renderInput = () => {
+                      if (type === 'select-status') {
+                        const statusOpts = ['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Joined', 'Rejected', 'Dropped', 'Hold', 'Interested', 'Interested and scheduled'];
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select</option>
+                            {statusOpts.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'select-ctc') {
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select</option>
+                            {ctcRanges.map(r => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'select-np') {
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select</option>
+                            {noticePeriodOptions.map(o => <option key={o} value={o}>{o}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'select-position') {
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select Position</option>
+                            {positions.filter(p => p.isActive !== false).map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'select-client') {
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select Client</option>
+                            {clients.filter(c => c.isActive !== false).map(c => <option key={c._id} value={c.name}>{c.name}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'select-source') {
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select Source</option>
+                            {sources.filter(s => s.isActive !== false).map(s => <option key={s._id} value={s.name}>{s.name}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'select-experience') {
+                        return (
+                          <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
+                            <option value="">Select</option>
+                            <option value="Fresher">Fresher</option>
+                            {[...Array(31).keys()].slice(1).map(n => <option key={n} value={n}>{n} {n === 1 ? 'year' : 'years'}</option>)}
+                          </select>
+                        );
+                      }
+                      if (type === 'date') {
+                        return <input type="date" value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass} />;
+                      }
+                      return (
+                        <input type={type === 'email' ? 'email' : 'text'} value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass} />
+                      );
+                    };
                     return (
                       <div key={field}>
                         <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
                           {label}
-                          {isDifferent && (
-                            <span className="text-orange-500 normal-case font-medium ml-1">(was: {origStr.substring(0, 30)})</span>
-                          )}
+                          {isDifferent && <span className="text-orange-500 normal-case font-medium ml-1">(was: {origStr.substring(0, 25)})</span>}
                         </label>
-                        {type === 'select' ? (
-                          <select value={fixedVal} onChange={(e) => setEditingRow(prev => ({ ...prev, fixed: { ...prev.fixed, [field]: e.target.value } }))}
-                            className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none ${isDifferent ? 'border-orange-300 bg-orange-50/30' : 'border-gray-300'}`}>
-                            <option value="">Select Status</option>
-                            {['Applied', 'Screening', 'Interview', 'Offer', 'Hired', 'Joined', 'Rejected', 'Dropped', 'Hold', 'Interested', 'Interested and scheduled'].map(s => (
-                              <option key={s} value={s}>{s}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input type={type || 'text'} value={fixedVal} onChange={(e) => setEditingRow(prev => ({ ...prev, fixed: { ...prev.fixed, [field]: e.target.value } }))}
-                            className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none ${isDifferent ? 'border-orange-300 bg-orange-50/30' : 'border-gray-300'}`} />
-                        )}
-                        {hasOriginal && !isDifferent && fixedStr && (
+                        {renderInput()}
+                        {err && <p className="text-xs text-red-600 mt-0.5">{err}</p>}
+                        {hasOriginal && !isDifferent && fixedStr && !err && (
                           <p className="text-[9px] text-gray-400 mt-0.5">Original: {origStr.substring(0, 40)}</p>
                         )}
                       </div>
@@ -801,7 +991,7 @@ const AutoImportPage = () => {
                 <div className="flex gap-3">
                   <button onClick={handleSaveEditedRecord} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors"><Save size={16} /> Save & Import</button>
                   <button onClick={() => handleRevalidateRecord(editingRow)} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"><RefreshCw size={16} /> Re-validate</button>
-                  <button onClick={() => setEditingRow(null)} className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
+                  <button onClick={() => { setEditingRow(null); setEditFormErrors({}); }} className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
                 </div>
               </div>
             </div>
@@ -879,6 +1069,20 @@ const AutoImportPage = () => {
         )}
 
         <ConfirmationModal isOpen={confirmModal.isOpen} onClose={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))} onConfirm={confirmModal.onConfirm || (() => {})} title={confirmModal.title} message={confirmModal.message} confirmText={confirmModal.confirmText} type={confirmModal.type} isLoading={isImporting} />
+
+        {/* Confirm: Send Review & Blocked to Pending Review */}
+        {pendingReviewConfirmModal.isOpen && (
+          <ConfirmationModal
+            isOpen={true}
+            onClose={() => setPendingReviewConfirmModal(prev => ({ ...prev, isOpen: false }))}
+            onConfirm={handleSendToPendingReviewConfirm}
+            title="Send to Pending Review"
+            message={`${pendingReviewConfirmModal.reviewCount ?? 0} review + ${pendingReviewConfirmModal.blockedCount ?? 0} blocked records (${pendingReviewConfirmModal.total ?? 0} total) will be saved to the Pending Review page. You can review and fix them there before importing to the database. Continue?`}
+            confirmText="Send to Pending Review"
+            type="info"
+            isLoading={isSavingToPending}
+          />
+        )}
       </div>
     </Layout>
   );

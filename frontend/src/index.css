@@ -217,3 +217,29 @@ body {
   min-height: 100vh;
   /* DHYAAN DO: Maine yaha se 'display: flex' aur 'place-items: center' hata diya hai */
 }
+
+/* Hand cursor on all interactive elements (buttons, links, clickable) */
+button,
+a,
+[role="button"],
+select,
+label[for],
+input[type="checkbox"],
+input[type="radio"],
+.cursor-pointer {
+  cursor: pointer;
+}
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+/* Scrollable dropdowns when option list is long (e.g. Position, Client, Source) */
+select[data-long-list] {
+  max-height: 260px;
+}
+@media (min-width: 768px) {
+  select[data-long-list] {
+    max-height: 280px;
+  }
+}

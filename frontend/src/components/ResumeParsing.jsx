@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileText, CheckCircle, AlertCircle, X, ChevronLeft, ChevronRight, ThumbsUp, ThumbsDown, Loader2 } from 'lucide-react';
+import { Upload, FileText, CheckCircle, AlertCircle, X, ChevronLeft, ChevronRight, ThumbsUp, ThumbsDown, Loader2, Edit2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Header from './Header';
 import Sidebar from './Sidebar';
@@ -18,9 +18,8 @@ const ResumeParsing = () => {
   const [results, setResults] = useState([]);
   const [error, setError] = useState('');
   const [editingIdx, setEditingIdx] = useState(null);
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'slider'
   const [currentSlide, setCurrentSlide] = useState(0);
-  const [approvedIdx, setApprovedIdx] = useState(new Set()); // indexes of approved (for slider)
+  const [approvedIdx, setApprovedIdx] = useState(new Set()); // indexes of approved
   const [editBuffer, setEditBuffer] = useState({
     name: '',
     email: '',
@@ -209,32 +208,16 @@ const ResumeParsing = () => {
   // Save edited data
   const handleSaveEdit = (idx) => {
     setResults(prev => prev.map((r, i) =>
-      i === idx ? { ...r, data: { ...editBuffer } } : r
+      i === idx ? { ...r, data: { ...r.data, ...editBuffer } } : r
     ));
     setEditingIdx(null);
-    setEditBuffer({ name: '', email: '', contact: '' });
+    setEditBuffer({ name: '', email: '', contact: '', position: '', company: '', experience: '', location: '', skills: '', education: '' });
   };
 
   // Handle edit buffer change
   const handleEditChange = (e) => {
     const { name, value } = e.target;
     setEditBuffer(prev => ({ ...prev, [name]: value }));
-  };
-
-  // Download results as JSON
-  const downloadResults = () => {
-    const successfulResults = results
-      .filter(r => r.success)
-      .map(r => r.data);
-
-    const dataStr = JSON.stringify(successfulResults, null, 2);
-    const dataBlob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(dataBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `resume-parsing-results-${Date.now()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
   };
 
   // Add single candidate (navigate to add-candidate with prefill); persist results so they're restored on return
@@ -251,14 +234,11 @@ const ResumeParsing = () => {
   const [confirmAddAllOpen, setConfirmAddAllOpen] = useState(false);
   const [addSuccessModal, setAddSuccessModal] = useState(null); // { created, skipped, errors }
   const successfulResults = results.filter(r => r.success && r.data);
-  const approvedDataList = viewMode === 'slider'
-    ? results.filter((r, i) => r.success && r.data && approvedIdx.has(i)).map(r => r.data)
-    : successfulResults.map(r => r.data);
+  const approvedDataList = results.filter((r, i) => r.success && r.data && approvedIdx.has(i)).map(r => r.data);
 
   const openConfirmAddAll = () => {
-    const toAdd = viewMode === 'slider' ? approvedDataList : successfulResults.map(r => r.data);
-    if (!toAdd.length) {
-      toast.error(viewMode === 'slider' ? 'No approved resumes to add. Approve at least one.' : 'No successfully parsed resumes to add.');
+    if (!approvedDataList.length) {
+      toast.error('No approved resumes to add. Approve at least one.');
       return;
     }
     setConfirmAddAllOpen(true);
@@ -266,7 +246,7 @@ const ResumeParsing = () => {
 
   const addAllAsCandidates = async () => {
     setConfirmAddAllOpen(false);
-    const toAdd = viewMode === 'slider' ? approvedDataList : successfulResults.map(r => r.data);
+    const toAdd = approvedDataList;
     if (!toAdd.length) return;
 
     const candidates = toAdd.map(c => ({
@@ -369,53 +349,26 @@ const ResumeParsing = () => {
               <div className="space-y-4">
                 <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
                   <h2 className="text-xl font-bold text-gray-900">Parsing Results</h2>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="flex rounded-lg border border-gray-200 p-0.5 bg-gray-100">
-                      <button
-                        onClick={() => { setViewMode('list'); setCurrentSlide(0); }}
-                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${viewMode === 'list' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
-                      >
-                        List
-                      </button>
-                      <button
-                        onClick={() => {
-                          setViewMode('slider');
-                          setCurrentSlide(0);
-                          setApprovedIdx(new Set(results.map((_, i) => i).filter(i => results[i].success)));
-                        }}
-                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${viewMode === 'slider' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
-                      >
-                        Slider
-                      </button>
-                    </div>
+                  <div className="flex items-center gap-3 flex-wrap">
                     <button
                       onClick={openConfirmAddAll}
-                      disabled={addingAll || (viewMode === 'slider' ? approvedDataList.length === 0 : results.filter(r => r.success).length === 0)}
-                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
+                      disabled={addingAll || approvedDataList.length === 0}
+                      className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 text-white text-sm font-semibold shadow-md hover:from-green-700 hover:to-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                     >
                       {addingAll ? (
                         <>
-                          <Loader2 size={16} className="animate-spin" />
+                          <Loader2 size={18} className="animate-spin" />
                           Adding...
                         </>
-                      ) : viewMode === 'slider' ? (
-                        <>➕ Add {approvedDataList.length} Approved</>
                       ) : (
-                        <>➕ Add All as Candidates</>
+                        <>Add {approvedDataList.length} Approved as Candidates</>
                       )}
-                    </button>
-                    <button
-                      onClick={downloadResults}
-                      disabled={results.filter(r => r.success).length === 0}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-                    >
-                      📥 Download Results
                     </button>
                   </div>
                 </div>
 
-                {/* Slider view: one card + Prev/Next + Approve/Reject */}
-                {viewMode === 'slider' && results.length > 0 && (
+                {/* Slider view: one card + Prev/Next + Approve/Reject + all fields */}
+                {results.length > 0 && (
                   <div className="mb-6 bg-white rounded-xl border border-gray-200 p-5">
                     <div className="flex items-center justify-between mb-4">
                       <span className="text-sm font-medium text-gray-500">
@@ -441,13 +394,41 @@ const ResumeParsing = () => {
                     {(() => {
                       const result = results[currentSlide];
                       const isApproved = approvedIdx.has(currentSlide);
+                      const isEditing = editingIdx === currentSlide;
+                      const fields = [
+                        { key: 'name', label: 'Name', type: 'text' },
+                        { key: 'email', label: 'Email', type: 'email' },
+                        { key: 'contact', label: 'Contact', type: 'tel' },
+                        { key: 'position', label: 'Position', type: 'text' },
+                        { key: 'company', label: 'Company', type: 'text' },
+                        { key: 'experience', label: 'Experience', type: 'text' },
+                        { key: 'location', label: 'Location', type: 'text' },
+                        { key: 'education', label: 'Education', type: 'text' },
+                        { key: 'skills', label: 'Skills', type: 'text' }
+                      ];
                       return (
                         <div className={`border rounded-lg p-5 ${result.success ? 'bg-white border-green-200' : 'bg-red-50 border-red-200'}`}>
                           <div className="flex items-start justify-between mb-3">
-                            <p className="font-semibold text-gray-900">{result.fileName}</p>
+                            <div>
+                              <p className="font-semibold text-gray-900">{result.fileName}</p>
+                              {!result.success && result.error && (
+                                <p className="mt-2 text-sm text-red-700 font-medium">{result.error}</p>
+                              )}
+                            </div>
                             {result.success && (
                               <div className="flex gap-2">
+                                {!isEditing && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEdit(currentSlide)}
+                                    className="p-2 rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+                                    title="Edit"
+                                  >
+                                    <Edit2 size={18} />
+                                  </button>
+                                )}
                                 <button
+                                  type="button"
                                   onClick={() => setApprovedIdx(prev => { const n = new Set(prev); n.add(currentSlide); return n; })}
                                   className={`p-2 rounded-lg ${isApproved ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500 hover:bg-green-50'}`}
                                   title="Approve (include when adding all)"
@@ -455,6 +436,7 @@ const ResumeParsing = () => {
                                   <ThumbsUp size={18} />
                                 </button>
                                 <button
+                                  type="button"
                                   onClick={() => setApprovedIdx(prev => { const n = new Set(prev); n.delete(currentSlide); return n; })}
                                   className={`p-2 rounded-lg ${!isApproved ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500 hover:bg-red-50'}`}
                                   title="Reject (exclude when adding all)"
@@ -465,21 +447,83 @@ const ResumeParsing = () => {
                             )}
                           </div>
                           {result.success && result.data && (
-                            <div className="grid grid-cols-2 gap-2 text-sm">
-                              {['name', 'email', 'contact', 'position'].map(k => (
-                                <div key={k}>
-                                  <span className="text-gray-500 capitalize">{k}:</span>{' '}
-                                  <span className="text-gray-900">{result.data[k] || '—'}</span>
+                            <>
+                              {isEditing ? (
+                                <div className="space-y-3">
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                    {fields.map(({ key: k, label, type }) => (
+                                      <div key={k} className={k === 'skills' ? 'sm:col-span-2' : ''}>
+                                        <label className="text-gray-500 text-xs font-medium uppercase block mb-1">{label}</label>
+                                        {k === 'skills' ? (
+                                          <textarea
+                                            name={k}
+                                            value={editBuffer[k] || ''}
+                                            onChange={handleEditChange}
+                                            rows={2}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                            placeholder={label}
+                                          />
+                                        ) : (
+                                          <input
+                                            type={type}
+                                            name={k}
+                                            value={editBuffer[k] || ''}
+                                            onChange={handleEditChange}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                            placeholder={label}
+                                          />
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="flex gap-2 pt-3 border-t">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveEdit(currentSlide)}
+                                      className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleCancelEdit}
+                                      className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg text-sm font-medium hover:bg-gray-300 transition-colors"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
                                 </div>
-                              ))}
-                            </div>
-                          )}
-                          {result.success && result.data && (
-                            <div className="mt-4 pt-4 border-t flex gap-2">
-                              <button onClick={() => addToCandidate(result.data)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-                                Add this one as Candidate
-                              </button>
-                            </div>
+                              ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                  {fields.map(({ key: k, label }) => {
+                                    const confidence = result.confidence?.[k] || 0;
+                                    const confidenceColor = confidence >= 85 ? 'bg-green-100 text-green-700' : confidence >= 70 ? 'bg-blue-100 text-blue-700' : confidence >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700';
+                                    return (
+                                      <div key={k} className="border border-gray-100 rounded-lg px-3 py-2 bg-gray-50/50 flex items-start justify-between gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <span className="text-gray-500 text-xs font-medium uppercase block mb-0.5">{label}</span>
+                                          <span className="text-gray-900 break-words">{result.data[k] || '—'}</span>
+                                        </div>
+                                        {confidence > 0 && (
+                                          <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-semibold ${confidenceColor}`}>{Math.round(confidence)}%</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {!isEditing && (
+                                <div className="mt-4 pt-4 border-t flex justify-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => addToCandidate(result.data)}
+                                    className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all cursor-pointer min-w-[180px]"
+                                  >
+                                    Add as Candidate
+                                  </button>
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       );
@@ -503,8 +547,8 @@ const ResumeParsing = () => {
                   </div>
                 </div>
 
-                {/* Results Cards (list view only) */}
-                {viewMode === 'list' && (
+                {/* List view removed - slider only */}
+                {false && (
                 <div className="space-y-4">
                   {results.map((result, idx) => (
                     <div
@@ -690,7 +734,7 @@ const ResumeParsing = () => {
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-bold text-gray-900 mb-2">Add candidates to database</h3>
             <p className="text-sm text-gray-600 mb-4">
-              Add {(viewMode === 'slider' ? approvedDataList : successfulResults.map(r => r.data)).length} candidate(s) from the parsed resumes to your All Candidates list?
+              Add {approvedDataList.length} candidate(s) from the parsed resumes to your All Candidates list?
             </p>
             <p className="text-xs text-gray-500 mb-4">Duplicates (same email/phone) will be skipped. You can review them in All Candidates after adding.</p>
             <div className="flex gap-3">

@@ -361,11 +361,6 @@ const TeamPage = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Email Address *</label>
-                    {emailError && (
-                      <p className="text-xs text-red-600 mb-1 flex items-center gap-1">
-                        <AlertCircle size={12} /> {emailError}
-                      </p>
-                    )}
                     <div className="relative">
                       <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                       <input
@@ -380,6 +375,11 @@ const TeamPage = () => {
                         placeholder={companyDomain?.domain ? `xyz@${companyDomain.domain}` : 'xyz@skillnixrecruitment.com'}
                       />
                     </div>
+                    {emailError && (
+                      <p className="mt-1 text-xs text-red-600 text-left">
+                        {emailError}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -12,6 +12,19 @@ const getPositions = async (req, res) => {
   }
 };
 
+// Get all positions across company (all users) — for "View all positions added across company"
+const getAllPositions = async (req, res) => {
+  try {
+    const positions = await Position.find({ isActive: true }).sort({ name: 1 }).lean();
+    const userIdStr = req.user?.id?.toString();
+    const withOwner = positions.map(p => ({ ...p, isMine: p.createdBy?.toString() === userIdStr }));
+    res.json(withOwner);
+  } catch (error) {
+    console.error('Error fetching all positions:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Create a new position
 const createPosition = async (req, res) => {
   try {
@@ -104,6 +117,7 @@ const deletePosition = async (req, res) => {
 
 module.exports = {
   getPositions,
+  getAllPositions,
   createPosition,
   updatePosition,
   deletePosition

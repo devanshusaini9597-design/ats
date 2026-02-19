@@ -4,17 +4,46 @@ import { useNavigate } from 'react-router-dom';
 import { handleLogout } from '../utils/authUtils';
 import { useToast } from './Toast';
 import NotificationBell from './NotificationBell';
+import { authenticatedFetch } from '../utils/fetchUtils';
+import BASE_API_URL from '../config';
 
 const Header = ({ setSidebarOpen, sidebarOpen }) => {
   const navigate = useNavigate();
   const toast = useToast();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [profilePicture, setProfilePicture] = useState('');
 
   // Get user info from localStorage
   const userEmail = localStorage.getItem('userEmail') || 'User';
   const userName = localStorage.getItem('userName') || '';
   const displayName = userName || (userEmail.includes('@') ? userEmail.split('@')[0] : userEmail);
   const initials = (userName ? userName.split(' ').map(w => w[0]).join('').slice(0, 2) : displayName.slice(0, 2)).toUpperCase();
+
+  // Fetch profile picture on mount and when Settings updates it
+  useEffect(() => {
+    const fetchProfilePicture = async () => {
+      try {
+        const res = await authenticatedFetch(`${BASE_API_URL}/api/profile`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.user?.profilePicture) {
+            setProfilePicture(data.user.profilePicture);
+          } else {
+            setProfilePicture('');
+          }
+        }
+      } catch {
+        setProfilePicture('');
+      }
+    };
+    fetchProfilePicture();
+
+    const onPictureUpdated = (e) => {
+      setProfilePicture(e.detail ?? '');
+    };
+    window.addEventListener('profilePictureUpdated', onPictureUpdated);
+    return () => window.removeEventListener('profilePictureUpdated', onPictureUpdated);
+  }, []);
 
   return (
     <header className="sticky top-0 z-20 bg-white border-b border-gray-200 transition-all duration-300">
@@ -54,8 +83,12 @@ const Header = ({ setSidebarOpen, sidebarOpen }) => {
               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 hover:bg-gray-100 rounded-lg transition-colors"
               title="User menu"
             >
-              <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
-                {initials}
+              <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 overflow-hidden bg-blue-600 text-white">
+                {profilePicture ? (
+                  <img src={`${BASE_API_URL}${profilePicture}`} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  initials
+                )}
               </div>
               <span className="hidden sm:inline text-sm font-medium text-gray-700">Hi, {displayName}</span>
               <ChevronDown size={16} className="text-gray-600 hidden sm:inline" />

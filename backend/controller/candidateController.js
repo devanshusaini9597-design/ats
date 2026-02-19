@@ -2162,7 +2162,7 @@ exports.bulkCreateFromParsed = async (req, res) => {
                     experience: (c.experience || '').toString().trim() || '',
                     location: (c.location || '').trim() || '',
                     skills: (c.skills || '').trim() || '',
-                    remark: (c.education ? `Education: ${c.education}` : '').trim() || '',
+                    remark: (c.remark || '').trim() || '',
                     status: 'Applied',
                     createdBy: userId,
                     date: new Date().toISOString().split('T')[0]

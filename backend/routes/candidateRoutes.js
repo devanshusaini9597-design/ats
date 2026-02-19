@@ -2,10 +2,12 @@
 
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const multer = require('multer');
 const path = require('path');
 const candidateController = require('../controller/candidateController');
 const Candidate = require('../models/Candidate'); // Baar-baar require karne se achha hai ek baar upar kar lein
+const PendingCandidate = require('../models/PendingCandidate');
 
 // ✅ VALIDATION AND AUTO-FIX HELPERS
 const validateAndFixEmail = (email) => {
@@ -603,6 +605,81 @@ router.get('/check-email/:email', async (req, res) => {
     }
 });
 
+// --- PENDING (must be before /:id so "pending" is not treated as candidate id) ---
+router.get('/pending', async (req, res) => {
+    try {
+        const { category, page = 1, limit = 50, search, batchId } = req.query;
+        const userIdRaw = req.user && req.user.id;
+        if (!userIdRaw) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
+        const userIdStr = String(userIdRaw).trim();
+        const userIdObj = (userIdStr.length === 24 && /^[a-fA-F0-9]+$/.test(userIdStr))
+            ? new mongoose.Types.ObjectId(userIdStr)
+            : null;
+        const createdByFilter = userIdObj ? { $in: [userIdObj, userIdStr] } : userIdStr;
+
+        let filter = { createdBy: createdByFilter };
+        if (category && category !== 'all') filter.category = category;
+        if (batchId) filter.batchId = batchId;
+        if (search && search.trim()) {
+            const q = new RegExp(search.trim(), 'i');
+            filter = { ...filter, $or: [
+                { name: q }, { email: q }, { contact: q },
+                { companyName: q }, { location: q }, { position: q }
+            ] };
+        }
+
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+        let [candidates, total] = await Promise.all([
+            PendingCandidate.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+            PendingCandidate.countDocuments(filter)
+        ]);
+
+        if (candidates.length === 0 && total === 0 && userIdObj) {
+            const stringFilter = { createdBy: userIdStr };
+            if (category && category !== 'all') stringFilter.category = category;
+            if (batchId) stringFilter.batchId = batchId;
+            if (search && search.trim()) {
+                const q = new RegExp(search.trim(), 'i');
+                stringFilter.$or = [
+                    { name: q }, { email: q }, { contact: q },
+                    { companyName: q }, { location: q }, { position: q }
+                ];
+            }
+            const [cand, tot] = await Promise.all([
+                PendingCandidate.find(stringFilter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+                PendingCandidate.countDocuments(stringFilter)
+            ]);
+            candidates = cand;
+            total = tot;
+        }
+
+        const countFilter = { createdBy: createdByFilter };
+        let [reviewCount, blockedCount] = await Promise.all([
+            PendingCandidate.countDocuments({ ...countFilter, category: 'review' }),
+            PendingCandidate.countDocuments({ ...countFilter, category: 'blocked' })
+        ]);
+        if (total > 0 && reviewCount === 0 && blockedCount === 0) {
+            const countByStr = { createdBy: userIdStr };
+            reviewCount = await PendingCandidate.countDocuments({ ...countByStr, category: 'review' });
+            blockedCount = await PendingCandidate.countDocuments({ ...countByStr, category: 'blocked' });
+        }
+
+        res.json({
+            success: true,
+            candidates,
+            total,
+            page: parseInt(page),
+            totalPages: Math.ceil(total / parseInt(limit)),
+            stats: { review: reviewCount, blocked: blockedCount, total: reviewCount + blockedCount }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 // --- 6.5 GET SINGLE CANDIDATE BY ID ---
 router.get('/:id', async (req, res) => {
     try {
@@ -800,9 +877,7 @@ router.post('/share', candidateController.shareCandidate);
 // Import shared candidates into current user's database (copy as own)
 router.post('/import-shared', candidateController.importSharedCandidates);
 
-// ================= PENDING CANDIDATES (Review / Blocked) =================
-const PendingCandidate = require('../models/PendingCandidate');
-
+// ================= PENDING CANDIDATES (Review / Blocked) — GET /pending is defined above before /:id =================
 // Save review/blocked records from auto import
 router.post('/pending/save', async (req, res) => {
     try {
@@ -812,92 +887,77 @@ router.post('/pending/save', async (req, res) => {
         }
 
         const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const userId = req.user.id;
-        const createdByObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+        const userIdRaw = req.user && req.user.id;
+        if (!userIdRaw) return res.status(401).json({ success: false, message: 'Unauthorized' });
+        const userIdStr = String(userIdRaw).trim();
+        const createdByObj = (userIdStr.length === 24 && /^[a-fA-F0-9]+$/.test(userIdStr))
+            ? new mongoose.Types.ObjectId(userIdStr)
+            : userIdStr;
 
         const getVal = (r, key) => r.fixed?.[key] ?? r[key];
-        const docs = records.map(r => ({
-            batchId,
-            fileName: fileName || '',
-            category: r.category || 'review',
-            rowIndex: r.rowIndex ?? 0,
-            name: getVal(r, 'name') || '',
-            email: getVal(r, 'email') || '',
-            contact: getVal(r, 'contact') || '',
-            position: getVal(r, 'position') || '',
-            companyName: getVal(r, 'companyName') || '',
-            location: getVal(r, 'location') || '',
-            ctc: getVal(r, 'ctc') || '',
-            expectedCtc: getVal(r, 'expectedCtc') || '',
-            experience: getVal(r, 'experience') || '',
-            noticePeriod: getVal(r, 'noticePeriod') || '',
-            status: getVal(r, 'status') || 'Applied',
-            source: getVal(r, 'source') || '',
-            client: getVal(r, 'client') || '',
-            spoc: getVal(r, 'spoc') || '',
-            remark: getVal(r, 'remark') || '',
-            fls: getVal(r, 'fls') || '',
-            date: getVal(r, 'date') || new Date().toISOString().split('T')[0],
-            originalData: r.original || {},
-            confidence: r.validation?.confidence || '',
-            validationErrors: r.validation?.errors || [],
-            validationWarnings: r.validation?.warnings || [],
-            autoFixChanges: r.autoFixChanges || [],
-            swaps: r.swaps || [],
-            createdBy: createdByObj
-        }));
+        const docs = records.map(r => {
+            const emailVal = (getVal(r, 'email') || '').toString().trim().toLowerCase();
+            return {
+                batchId,
+                fileName: fileName || '',
+                category: r.category || 'review',
+                rowIndex: r.rowIndex ?? 0,
+                name: getVal(r, 'name') || '',
+                email: emailVal || (getVal(r, 'email') || ''),
+                contact: getVal(r, 'contact') || '',
+                position: getVal(r, 'position') || '',
+                companyName: getVal(r, 'companyName') || '',
+                location: getVal(r, 'location') || '',
+                ctc: getVal(r, 'ctc') || '',
+                expectedCtc: getVal(r, 'expectedCtc') || '',
+                experience: getVal(r, 'experience') || '',
+                noticePeriod: getVal(r, 'noticePeriod') || '',
+                status: getVal(r, 'status') || 'Applied',
+                source: getVal(r, 'source') || '',
+                client: getVal(r, 'client') || '',
+                spoc: getVal(r, 'spoc') || '',
+                remark: getVal(r, 'remark') || '',
+                fls: getVal(r, 'fls') || '',
+                date: getVal(r, 'date') || new Date().toISOString().split('T')[0],
+                originalData: r.original || {},
+                confidence: r.validation?.confidence || '',
+                validationErrors: r.validation?.errors || [],
+                validationWarnings: r.validation?.warnings || [],
+                autoFixChanges: r.autoFixChanges || [],
+                swaps: r.swaps || [],
+                createdBy: createdByObj
+            };
+        });
 
-        await PendingCandidate.insertMany(docs);
+        // Enterprise: upsert by (createdBy, email) so re-uploading the same file updates existing rows instead of duplicating
+        const bulkOps = docs.map(doc => {
+            const emailNorm = (doc.email || '').toString().trim().toLowerCase();
+            const filter = emailNorm
+                ? { createdBy: createdByObj, email: emailNorm }
+                : { _id: new mongoose.Types.ObjectId() };
+            const update = { $set: { ...doc, updatedAt: new Date() } };
+            if (emailNorm) {
+                return { updateOne: { filter, update, upsert: true } };
+            }
+            return { insertOne: { document: { ...doc, _id: filter._id } } };
+        });
 
-        res.json({ success: true, message: `Saved ${docs.length} records to pending`, batchId, count: docs.length });
-    } catch (err) {
-        console.error('[PENDING-SAVE] Error:', err.message);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
-
-// Get pending candidates (with pagination and filtering) — user sees only their own data
-router.get('/pending', async (req, res) => {
-    try {
-        const { category, page = 1, limit = 50, search, batchId } = req.query;
-        const userId = req.user.id;
-        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
-        // Match both ObjectId and string so records show whether stored as either type
-        const createdByFilter = { $in: [userIdObj, userId] };
-
-        const filter = { createdBy: createdByFilter };
-        if (category && category !== 'all') filter.category = category;
-        if (batchId) filter.batchId = batchId;
-        if (search && search.trim()) {
-            const q = new RegExp(search.trim(), 'i');
-            filter.$or = [
-                { name: q }, { email: q }, { contact: q },
-                { companyName: q }, { location: q }, { position: q }
-            ];
-        }
-
-        const skip = (parseInt(page) - 1) * parseInt(limit);
-        const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-        const [candidates, total] = await Promise.all([
-            PendingCandidate.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
-            PendingCandidate.countDocuments(filter)
-        ]);
-
-        const countFilter = { createdBy: createdByFilter };
-        const [reviewCount, blockedCount] = await Promise.all([
-            PendingCandidate.countDocuments({ ...countFilter, category: 'review' }),
-            PendingCandidate.countDocuments({ ...countFilter, category: 'blocked' })
-        ]);
+        const result = await PendingCandidate.bulkWrite(bulkOps, { ordered: false });
+        const inserted = (result.upsertedCount || 0) + (result.insertedCount || 0);
+        const updated = result.modifiedCount || 0;
 
         res.json({
             success: true,
-            candidates,
-            total,
-            page: parseInt(page),
-            totalPages: Math.ceil(total / parseInt(limit)),
-            stats: { review: reviewCount, blocked: blockedCount, total: reviewCount + blockedCount }
+            message: updated > 0
+                ? `Processed ${docs.length} records: ${inserted} added, ${updated} updated (same email = updated, not duplicated).`
+                : `Saved ${docs.length} records to pending.`,
+            batchId,
+            count: docs.length,
+            inserted,
+            updated
         });
     } catch (err) {
+        console.error('[PENDING-SAVE] Error:', err.message);
         res.status(500).json({ success: false, message: err.message });
     }
 });
@@ -905,8 +965,14 @@ router.get('/pending', async (req, res) => {
 // Update a pending candidate (edit fields)
 router.put('/pending/:id', async (req, res) => {
     try {
+        const userId = req.user && req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+        const userIdStr = String(userId).trim();
+        const createdByFilter = (userIdStr.length === 24 && /^[a-fA-F0-9]+$/.test(userIdStr))
+            ? { $in: [new mongoose.Types.ObjectId(userIdStr), userIdStr] }
+            : userIdStr;
         const updated = await PendingCandidate.findOneAndUpdate(
-            { _id: req.params.id, createdBy: req.user.id },
+            { _id: req.params.id, createdBy: createdByFilter },
             { $set: req.body },
             { new: true }
         );
@@ -953,7 +1019,9 @@ router.post('/pending/import', async (req, res) => {
         }
 
         const userId = req.user.id;
-        const pendingRecords = await PendingCandidate.find({ _id: { $in: ids }, createdBy: userId }).lean();
+        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+        const createdByFilter = { $in: [userIdObj, userId] };
+        const pendingRecords = await PendingCandidate.find({ _id: { $in: ids }, createdBy: createdByFilter }).lean();
 
         if (pendingRecords.length === 0) {
             return res.status(404).json({ success: false, message: 'No matching records found' });
@@ -997,7 +1065,7 @@ router.post('/pending/import', async (req, res) => {
 
         // Remove successfully imported records from pending
         if (imported > 0) {
-            await PendingCandidate.deleteMany({ _id: { $in: ids }, createdBy: userId });
+            await PendingCandidate.deleteMany({ _id: { $in: ids }, createdBy: createdByFilter });
         }
 
         res.json({

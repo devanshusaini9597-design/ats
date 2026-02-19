@@ -64,7 +64,7 @@ export const formatByFieldName = (fieldName, value) => {
 
   const normalized = normalizeWhitespace(value);
 
-  // Fields that should be title-cased (capitalize first letter of each word)
+  // Fields that should be title-cased (capitalize first letter of each word, single space)
   const titleCaseFields = [
     'name',
     'location',
@@ -78,11 +78,13 @@ export const formatByFieldName = (fieldName, value) => {
     'state',
     'country',
     'templateName',
-    'description'
+    'description',
+    'remark',
+    'skills'
   ];
 
   // Fields that are email or should remain lowercase
-  const noFormatFields = ['email', 'body', 'subject', 'remark', 'note'];
+  const noFormatFields = ['email', 'body', 'subject', 'note'];
 
   if (noFormatFields.includes(fieldName)) {
     return normalized.toLowerCase();

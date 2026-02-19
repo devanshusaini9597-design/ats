@@ -203,12 +203,10 @@ const AddCandidatePage = () => {
         .replace(/@gnail\.com$/, '@gmail.com')
         .replace(/@gmail\.con$/, '@gmail.com')
         .replace(/@gmal\.com$/, '@gmail.com');
-    } else if ((name === 'name' || name === 'spoc' || name === 'location' || name === 'companyName') && value) {
+    } else if ((name === 'name' || name === 'spoc' || name === 'location' || name === 'companyName' || name === 'skills' || name === 'remark') && value) {
       // Remove leading spaces, collapse multiple spaces to one, proper-case each word
-      // "DeVANshU saINI" → "Devanshu Saini"
-      let v = value.replace(/^\s+/, ''); // trim leading spaces only
-      v = v.replace(/\s{2,}/g, ' '); // collapse multiple spaces to single
-      // Proper-case: capitalize first letter, lowercase rest for each word
+      let v = value.replace(/^\s+/, '');
+      v = v.replace(/\s{2,}/g, ' ');
       v = v.split(' ').map(word => {
         if (!word) return '';
         return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
@@ -563,6 +561,7 @@ const AddCandidatePage = () => {
                     name="position"
                     value={formData.position}
                     onChange={handleInputChange}
+                    data-long-list={positions.length > 8 ? 'true' : undefined}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
                   >
                     <option value="">Select Position</option>
@@ -720,6 +719,7 @@ const AddCandidatePage = () => {
                     name="client"
                     value={formData.client}
                     onChange={handleInputChange}
+                    data-long-list={clients.length > 8 ? 'true' : undefined}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
                   >
                     <option value="">Select Client</option>
@@ -747,6 +747,7 @@ const AddCandidatePage = () => {
                     name="source"
                     value={formData.source}
                     onChange={handleInputChange}
+                    data-long-list={sources.length > 8 ? 'true' : undefined}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
                   >
                     <option value="">Select Source</option>

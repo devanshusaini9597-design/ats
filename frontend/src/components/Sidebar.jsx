@@ -111,7 +111,7 @@ const Sidebar = ({ isOpen, setIsOpen, sidebarActions = {} }) => {
               <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
                 <span className="text-white font-bold text-sm">HR</span>
               </div>
-              <span className="font-bold text-gray-900 text-sm">SkillNix</span>
+              <span className="font-bold text-gray-900 text-sm">Skillnix</span>
             </div>
           )}
           

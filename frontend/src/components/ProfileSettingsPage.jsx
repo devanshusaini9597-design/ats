@@ -137,6 +137,7 @@ const ProfileSettingsPage = () => {
         setProfilePicture(data.profilePicture);
         setPendingPhotoFile(null);
         setPendingPhotoPreview(null);
+        window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: data.profilePicture || '' }));
         toast.success('Profile picture saved');
       } else {
         toast.error(data.message || 'Failed to save picture');
@@ -155,6 +156,7 @@ const ProfileSettingsPage = () => {
       const data = await res.json();
       if (data.success) {
         setProfilePicture('');
+        window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: '' }));
         toast.success('Profile picture removed');
       }
     } catch {

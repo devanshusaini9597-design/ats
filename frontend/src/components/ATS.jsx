@@ -2016,8 +2016,7 @@ const handleAddCandidate = async (e) => {
       label: 'Status',
       render: (candidate) => {
         const remark = candidate.remark || '';
-        const skills = candidate.skills || '';
-        const hasTooltip = remark || skills;
+        const hasTooltip = !!remark;
         return (
           <div className="flex items-center gap-2">
             <span className={
@@ -2031,23 +2030,13 @@ const handleAddCandidate = async (e) => {
             </span>
             {hasTooltip && (
               <div className="relative group">
-                <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title={skills ? 'View skills / remark' : 'View remark'}>
+                <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title="View remark">
                   <Info size={16} className="text-gray-400 hover:text-gray-600" />
                 </button>
-                <div className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal">
-                  {skills && (
-                    <>
-                      <div className="font-semibold text-gray-500 mb-1">Skills</div>
-                      <div className="leading-relaxed mb-2">{skills}</div>
-                    </>
-                  )}
-                  {remark && (
-                    <>
-                      <div className="font-semibold text-gray-500 mb-1">Remark</div>
-                      <div className="leading-relaxed">{remark}</div>
-                    </>
-                  )}
-                  <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-white"></div>
+                <div className="absolute z-[100] hidden group-hover:block top-full left-1/2 -translate-x-1/2 mt-2 w-64 max-w-[90vw] p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal">
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-white drop-shadow-none"></div>
+                  <div className="font-semibold text-gray-500 mb-1">Remark</div>
+                  <div className="leading-relaxed">{remark}</div>
                 </div>
               </div>
             )}

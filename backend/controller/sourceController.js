@@ -12,6 +12,19 @@ const getSources = async (req, res) => {
   }
 };
 
+// Get all sources across company (all users)
+const getAllSources = async (req, res) => {
+  try {
+    const sources = await Source.find({ isActive: true }).sort({ name: 1 }).lean();
+    const userIdStr = req.user?.id?.toString();
+    const withOwner = sources.map(s => ({ ...s, isMine: s.createdBy?.toString() === userIdStr }));
+    res.json(withOwner);
+  } catch (error) {
+    console.error('Error fetching all sources:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Create a new source
 const createSource = async (req, res) => {
   try {
@@ -104,6 +117,7 @@ const deleteSource = async (req, res) => {
 
 module.exports = {
   getSources,
+  getAllSources,
   createSource,
   updateSource,
   deleteSource
