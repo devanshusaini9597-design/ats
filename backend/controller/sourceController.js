@@ -65,20 +65,20 @@ const createSource = async (req, res) => {
   }
 };
 
-// Update a source
+// Update a source (any authenticated user can edit any source)
 const updateSource = async (req, res) => {
   try {
+    if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
     const { id } = req.params;
     const { name, description, isActive } = req.body;
 
-    const source = await Source.findOne({ _id: id, createdBy: req.user.id });
+    const source = await Source.findOne({ _id: id });
     if (!source) {
       return res.status(404).json({ message: 'Source not found' });
     }
 
     if (name) {
       const existingSource = await Source.findOne({
-        createdBy: req.user.id,
         name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
         _id: { $ne: id },
         isActive: true
@@ -110,12 +110,13 @@ const updateSource = async (req, res) => {
   }
 };
 
-// Delete a source (hard delete from database for this user only)
+// Delete a source (any authenticated user can delete any source)
 const deleteSource = async (req, res) => {
   try {
+    if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
     const { id } = req.params;
 
-    const result = await Source.deleteOne({ _id: id, createdBy: req.user.id });
+    const result = await Source.deleteOne({ _id: id });
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Source not found' });
     }

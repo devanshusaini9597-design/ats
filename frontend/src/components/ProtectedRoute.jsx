@@ -26,7 +26,8 @@ const ProtectedRoute = ({ children }) => {
       try {
         // Hit any authenticated endpoint to verify token + user exists
         const res = await fetch(`${BASE_API_URL}/api/notifications/count`, {
-          headers: { 'Authorization': `Bearer ${storedToken}` }
+          headers: { 'Authorization': `Bearer ${storedToken}` },
+          credentials: 'include'
         });
 
         if (res.ok) {

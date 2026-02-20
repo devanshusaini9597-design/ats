@@ -77,11 +77,12 @@ const Login = () => {
       console.log('🔵 [LOGIN] Attempting login with email:', email);
       console.log('🔵 [LOGIN] API URL:', API_URL);
       
-      // ✅ Using the specific URL and Logic you provided
+      // ✅ POST to backend (works for localhost and live; CORS allows both)
       const res = await fetch(`${API_URL}/api/login`, { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password }),
+        credentials: 'include'
       });
 
       console.log('🔵 [LOGIN] Response status:', res.status, 'ok:', res.ok);

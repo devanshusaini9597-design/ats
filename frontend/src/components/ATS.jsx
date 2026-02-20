@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
 import { 
@@ -16,7 +17,8 @@ import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
-import { ctcRanges, ctcLpaBreakpoints, noticePeriodOptions } from '../utils/ctcRanges';
+import { ctcRanges, ctcLpaBreakpoints, expectedCtcOptions, noticePeriodOptions } from '../utils/ctcRanges';
+import { dedupeByName } from '../utils/dedupeMasterData';
 
 
 const ATS = forwardRef((props, ref) => {
@@ -46,6 +48,8 @@ const ATS = forwardRef((props, ref) => {
   const [showPreview, setShowPreview] = useState(false);
   const [previewResumeUrl, setPreviewResumeUrl] = useState(null);
   const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
+  const [previewResumeCandidate, setPreviewResumeCandidate] = useState(null);
+  const [previewResumeError, setPreviewResumeError] = useState(null); // e.g. 'file_not_found'
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isAutoParsing, setIsAutoParsing] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
@@ -100,6 +104,8 @@ const ATS = forwardRef((props, ref) => {
   const [correctionRecords, setCorrectionRecords] = useState([]);
   const [showOnlyCorrect, setShowOnlyCorrect] = useState(false); // Show all records by default
   const [totalRecordsInDB, setTotalRecordsInDB] = useState(0);
+  const [remarkPopover, setRemarkPopover] = useState(null); // { left, top, remark } for portal tooltip
+  const remarkPopoverTimeoutRef = useRef(null);
 
   // ✅ NEW: Review & Fix Workflow
   const [showReviewModal, setShowReviewModal] = useState(false);
@@ -121,6 +127,9 @@ const ATS = forwardRef((props, ref) => {
   const [isImportingShared, setIsImportingShared] = useState(false);
   const [showImportSharedConfirm, setShowImportSharedConfirm] = useState(false);
   const [importSharedSuccess, setImportSharedSuccess] = useState(null); // { imported: number }
+  const [showImportAllConfirm, setShowImportAllConfirm] = useState(false);
+  const [isImportingAll, setIsImportingAll] = useState(false);
+  const [importAllSuccess, setImportAllSuccess] = useState(null); // { imported: number }
 
   // Confirmation Modal States
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, type: 'warning', title: '', message: '', details: null, confirmText: 'Confirm', onConfirm: () => {}, isLoading: false });
@@ -165,7 +174,10 @@ const ATS = forwardRef((props, ref) => {
     spoc: useRef(null),
   };
 
-  // Master data for dropdowns (matching AddCandidatePage)
+  // Show mine / View all candidates (all users can see all data when "View all" is selected)
+  const [candidatesViewMode, setCandidatesViewMode] = useState('all'); // 'all' = enterprise: everyone sees all; 'mine' = only own + shared
+
+  // Master data for dropdowns (fetch all positions, clients, sources from DB regardless of who added)
   const [masterPositions, setMasterPositions] = useState([]);
   const [masterClients, setMasterClients] = useState([]);
   const [masterSources, setMasterSources] = useState([]);
@@ -179,14 +191,14 @@ const ATS = forwardRef((props, ref) => {
         const token = localStorage.getItem('token');
         const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
         const [positionsRes, clientsRes, sourcesRes, teamRes] = await Promise.all([
-          fetch(`${BASE_API_URL}/api/positions`, { headers }),
-          fetch(`${BASE_API_URL}/api/clients`, { headers }),
-          fetch(`${BASE_API_URL}/api/sources`, { headers }),
+          fetch(`${BASE_API_URL}/api/positions/all`, { headers }),
+          fetch(`${BASE_API_URL}/api/clients/all`, { headers }),
+          fetch(`${BASE_API_URL}/api/sources/all`, { headers }),
           fetch(`${BASE_API_URL}/api/team`, { headers })
         ]);
-        if (positionsRes.ok) setMasterPositions(await positionsRes.json());
-        if (clientsRes.ok) setMasterClients(await clientsRes.json());
-        if (sourcesRes.ok) setMasterSources(await sourcesRes.json());
+        if (positionsRes.ok) setMasterPositions(dedupeByName(await positionsRes.json()));
+        if (clientsRes.ok) setMasterClients(dedupeByName(await clientsRes.json()));
+        if (sourcesRes.ok) setMasterSources(dedupeByName(await sourcesRes.json()));
         if (teamRes.ok) {
           const teamData = await teamRes.json();
           if (teamData.success) setTeamMembers(teamData.members || []);
@@ -198,21 +210,136 @@ const ATS = forwardRef((props, ref) => {
     fetchMasterData();
   }, []);
 
-  // --- Resume Preview (direct URL in iframe - simple & reliable) ---
-  const handleResumePreview = (resumePath) => {
-    if (!resumePath) {
+  // Authenticated resume URL - works for all candidates (own + others) because backend sends file with token
+  const getResumeEndpointUrl = (candidateId, forDownload = false) => {
+    if (!candidateId) return '';
+    const base = (BASE_API_URL || '').replace(/\/$/, '');
+    const q = forDownload ? '?download=1' : '';
+    return `${base}/candidates/${candidateId}/resume${q}`;
+  };
+
+  // Fallback: direct file URL (must be absolute so iframe doesn't hit Vite dev server)
+  const getResumeUrl = (resumePath) => {
+    if (!resumePath || typeof resumePath !== 'string') return '';
+    const p = resumePath.trim();
+    if (p.startsWith('http')) return p;
+    const base = (BASE_API_URL || '').replace(/\/$/, '');
+    if (!base) return ''; // avoid relative URL when BASE_API_URL is missing
+    const pathPart = p.startsWith('/') ? p : `/${p}`;
+    const url = `${base}${pathPart}`;
+    return url.startsWith('http') ? url : '';
+  };
+
+  // --- Resume Preview: fetch with auth so it works for all candidates (own + others) ---
+  const handleResumePreview = async (candidate) => {
+    if (!candidate?.resume) {
       toast.error('No resume available for this candidate');
       return;
     }
-    const url = resumePath.startsWith('http') ? resumePath : `${BASE_API_URL}${resumePath}`;
-    setPreviewResumeUrl(url);
-    setPreviewBlobUrl(url);
-    setIsPreviewLoading(false);
+    const candidateId = candidate._id;
+    if (!candidateId) {
+      toast.error('Cannot load resume');
+      return;
+    }
+    const authUrl = getResumeEndpointUrl(candidateId);
+    // Never open modal or set iframe to a relative URL (would hit Vite and show "Cannot GET /uploads/...")
+    if (!authUrl || !authUrl.startsWith('http')) {
+      console.error('[Resume] API base URL not set. Set VITE_API_URL or run backend on same origin.');
+      toast.error('Cannot load resume (API URL not configured)');
+      return;
+    }
+    setPreviewResumeUrl(authUrl);
+    setPreviewBlobUrl(null);
+    setPreviewResumeError(null);
+    setIsPreviewLoading(true);
+    try {
+      const res = await authenticatedFetch(authUrl);
+      if (isUnauthorized(res)) {
+        handleUnauthorized();
+        return;
+      }
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => '');
+        console.error('[Resume] Auth endpoint failed:', 'status=', res.status, 'statusText=', res.statusText, 'url=', authUrl, 'candidateId=', candidateId, 'resumePath=', candidate.resume, 'body=', bodyText.slice(0, 200));
+        const isFileNotFound = res.status === 404 && (bodyText.includes('Resume file not found') || bodyText.includes('not found'));
+        if (isFileNotFound) {
+          setPreviewResumeCandidate(candidate);
+          setPreviewResumeError('file_not_found');
+          setPreviewResumeUrl(authUrl);
+        } else {
+          const directUrl = getResumeUrl(candidate.resume);
+          if (directUrl && directUrl.startsWith('http')) {
+            setPreviewBlobUrl(directUrl);
+            setPreviewResumeUrl(directUrl);
+            setPreviewResumeCandidate(candidate);
+          } else {
+            toast.error(`Failed to load resume (${res.status}). Check console for details.`);
+            setPreviewResumeUrl(null);
+          }
+        }
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      setPreviewBlobUrl(blobUrl);
+      setPreviewResumeUrl(authUrl);
+      setPreviewResumeCandidate(candidate);
+    } catch (err) {
+      console.error('[Resume] Error loading resume:', 'message=', err?.message, 'url=', authUrl, 'candidateId=', candidateId, 'resumePath=', candidate.resume, err);
+      const directUrl = getResumeUrl(candidate.resume);
+      if (directUrl && directUrl.startsWith('http')) {
+        setPreviewBlobUrl(directUrl);
+        setPreviewResumeUrl(directUrl);
+        setPreviewResumeCandidate(candidate);
+      } else {
+        toast.error('Failed to load resume. Check console for details.');
+        setPreviewResumeUrl(null);
+      }
+    } finally {
+      setIsPreviewLoading(false);
+    }
   };
 
   const closeResumePreview = () => {
+    if (previewBlobUrl && typeof previewBlobUrl === 'string' && previewBlobUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewBlobUrl);
+    }
     setPreviewBlobUrl(null);
     setPreviewResumeUrl(null);
+    setPreviewResumeCandidate(null);
+    setPreviewResumeError(null);
+  };
+
+  // Download resume via authenticated endpoint (works for all candidates)
+  const handleResumeDownload = async (candidate) => {
+    if (!candidate?.resume || !candidate?._id) {
+      toast.error('No resume available for this candidate');
+      return;
+    }
+    const url = getResumeEndpointUrl(candidate._id, true);
+    try {
+      const res = await authenticatedFetch(url);
+      if (isUnauthorized(res)) {
+        handleUnauthorized();
+        return;
+      }
+      if (!res.ok) {
+        toast.error('Failed to download resume');
+        return;
+      }
+      const blob = await res.blob();
+      const ext = (candidate.resume && candidate.resume.split('.').pop()) || 'pdf';
+      const filename = `resume-${candidate.name || candidate._id}.${ext.replace(/\?.*$/, '')}`;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast.success('Resume downloaded');
+    } catch (err) {
+      console.error('Error downloading resume:', err);
+      toast.error('Failed to download resume');
+    }
   };
 
   // --- Data Fetch Logic (with pagination + server-side search) ---
@@ -234,6 +361,8 @@ const ATS = forwardRef((props, ref) => {
       });
       if (search) params.append('search', search);
       if (position) params.append('position', position);
+      // view=mine (default): own + shared; view=all: all candidates in DB
+      params.append('view', candidatesViewMode);
 
       console.log('📤 Fetching candidates from:', `${API_URL}?${params.toString()}`);
       const res = await authenticatedFetch(`${API_URL}?${params.toString()}`, { cache: 'no-store' });
@@ -258,15 +387,16 @@ const ATS = forwardRef((props, ref) => {
       console.log('🔍 API Response:', response);
       console.log('🔍 response.success:', response?.success, 'response.data type:', Array.isArray(response?.data) ? `array[${response.data.length}]` : typeof response?.data);
       
-      // Handle both paginated and raw array formats
+      // Handle both paginated and raw array formats — only update list on success so failed "View all" doesn't wipe the list
       let candidatesData = [];
       let pages = 1;
-      
-      // Check HTTP status first
+
+      // Check HTTP status first — on failure, keep previous candidates and toast (do not clear)
       if (!res.ok) {
         console.error('❌ HTTP Error:', res.status, response?.message || response?.error);
         toast.error(response?.message || `Server error (${res.status})`);
-      } 
+        candidatesData = null; // signal: do not update state
+      }
       // Format 1: Success response with pagination
       else if (response?.success === true && Array.isArray(response?.data)) {
         candidatesData = response.data;
@@ -275,7 +405,7 @@ const ATS = forwardRef((props, ref) => {
         setTotalPages(pages);
         setTotalRecordsInDB(total);
         console.log('✅ Candidates loaded (paginated):', candidatesData.length, 'Total:', total);
-      } 
+      }
       // Format 2: Response with data property (success may be undefined)
       else if (response && Array.isArray(response.data)) {
         candidatesData = response.data;
@@ -296,6 +426,7 @@ const ATS = forwardRef((props, ref) => {
       else if (response?.success === false) {
         console.error('❌ API Error:', response.message);
         toast.error(response.message || 'Server error');
+        candidatesData = null;
       }
       // Format 5: Empty or unexpected
       else {
@@ -304,13 +435,15 @@ const ATS = forwardRef((props, ref) => {
         setTotalPages(1);
         setTotalRecordsInDB(0);
       }
-      
-      if (page === 1) {
-        setCandidates(candidatesData);
-      } else {
-        setCandidates(prev => [...prev, ...candidatesData]);
+
+      if (candidatesData !== null && Array.isArray(candidatesData)) {
+        if (page === 1) {
+          setCandidates(candidatesData);
+        } else {
+          setCandidates(prev => [...prev, ...candidatesData]);
+        }
+        setCurrentPage(page);
       }
-      setCurrentPage(page);
 
       try {
         const jobRes = await authenticatedFetch(`${JOBS_URL}?isTemplate=false`);
@@ -330,10 +463,10 @@ const ATS = forwardRef((props, ref) => {
         console.warn('⚠️ Failed to load jobs:', jobError.message);
         // Don't fail the entire load if jobs fail
       }
-    } catch (error) { 
-      console.error("❌ Error fetching data:", error); 
-      setCandidates([]);
+    } catch (error) {
+      console.error("❌ Error fetching data:", error);
       toast.error('Failed to load candidates. Please refresh page or check your connection.');
+      // Do not clear candidates on network error so "View all" / switch doesn't wipe the list
     } finally {
       setIsLoadingMore(false);
       setIsLoadingInitial(false);
@@ -365,10 +498,10 @@ const ATS = forwardRef((props, ref) => {
     };
   });
 
-  // INITIAL DATA LOAD
+  // INITIAL DATA LOAD + refetch when view mode (Show mine / View all) changes
   useEffect(() => {
-    fetchData(1, { search: '', position: '' });
-  }, []);
+    fetchData(1, { search: searchQuery || '', position: filterJob || '' });
+  }, [candidatesViewMode]);
 
   // ✅ SEARCH/FILTER CHANGES - Reset to page 1 (filtering is all client-side)
   useEffect(() => {
@@ -1009,7 +1142,9 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
             toast.error(data.message || 'Failed to delete candidates.');
           }
           setSelectedIds([]);
-          fetchData(1, { search: searchQuery, position: filterJob });
+          const pageToRestore = currentPage;
+          await fetchData(1, { search: searchQuery, position: filterJob });
+          setCurrentPage(pageToRestore);
         } catch (err) {
           console.error('Bulk delete error:', err);
           toast.error('Failed to delete candidates.');
@@ -1043,7 +1178,9 @@ const { selectedIds, setSelectedIds, isParsing, toggleSelection, selectAll, hand
           }
           toast.success(`Updated ${updated} of ${selectedIds.length} candidates to "${newStatus}".`);
           setSelectedIds([]);
-          fetchData(1, { search: searchQuery, position: filterJob });
+          const pageToRestore = currentPage;
+          await fetchData(1, { search: searchQuery, position: filterJob });
+          setCurrentPage(pageToRestore);
         } catch (err) {
           console.error('Bulk status update error:', err);
           toast.error('Failed to update some candidates.');
@@ -1085,7 +1222,9 @@ const handleDelete = (id) => {
 
             if (response.ok) {
               toast.success('Deleted successfully!');
-              fetchData(1, { search: searchQuery, position: filterJob }); 
+              const pageToRestore = currentPage;
+              await fetchData(1, { search: searchQuery, position: filterJob });
+              setCurrentPage(pageToRestore);
             } else {
                 const errorData = await response.json();
                 toast.error(`Error: ${errorData.message}`);
@@ -1440,9 +1579,10 @@ const handleDelete = (id) => {
   };
 
   const getIdsToImportShared = () => {
-    return selectedIds.length > 0
-      ? candidates.filter(c => selectedIds.includes(c._id) && c._isShared).map(c => c._id)
-      : filteredCandidates.filter(c => c._isShared).map(c => c._id);
+    const list = selectedIds.length > 0
+      ? candidates.filter(c => selectedIds.includes(c._id) && c._isShared)
+      : filteredCandidates.filter(c => c._isShared);
+    return list.map(c => c._id).filter(id => id != null && String(id).trim() !== '');
   };
 
   const handleImportSharedToMineClick = () => {
@@ -1467,16 +1607,54 @@ const handleDelete = (id) => {
       });
       const data = await res.json();
       if (data.success) {
-        setImportSharedSuccess({ imported: data.imported || 0 });
+        const importedCount = Number(data.imported);
+        setImportSharedSuccess({ imported: Number.isNaN(importedCount) ? 0 : importedCount });
         if (selectedIds.length > 0) setSelectedIds([]);
-        fetchCandidates(1, true);
+        fetchData(1, { search: searchQuery || '', position: filterJob || '' });
       } else {
-        toast.error(data.message || 'Import failed');
+        const msg = data.message != null ? String(data.message) : 'Import failed';
+        console.error('[Import shared] API error:', data.message, data);
+        toast.error(msg);
       }
     } catch (err) {
-      toast.error(err.message || 'Failed to import shared candidates');
+      const errMsg = err && typeof err === 'object' && 'message' in err ? String(err.message) : 'Failed to import shared candidates';
+      console.error('[Import shared] Error:', errMsg, err);
+      toast.error(errMsg);
     } finally {
       setIsImportingShared(false);
+    }
+  };
+
+  const handleImportAllToMineClick = () => {
+    if (candidatesViewMode !== 'all') return;
+    setShowImportAllConfirm(true);
+  };
+
+  const handleImportAllToMine = async () => {
+    setShowImportAllConfirm(false);
+    setIsImportingAll(true);
+    try {
+      const res = await authenticatedFetch(`${BASE_API_URL}/candidates/import-all-to-mine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (data.success) {
+        const importedCount = Number(data.imported);
+        setImportAllSuccess({ imported: Number.isNaN(importedCount) ? 0 : importedCount });
+        fetchData(1, { search: searchQuery || '', position: filterJob || '' });
+      } else {
+        const msg = data.message != null ? String(data.message) : 'Import failed';
+        console.error('[Import all] API error:', data.message, data);
+        toast.error(msg);
+      }
+    } catch (err) {
+      const errMsg = err && typeof err === 'object' && 'message' in err ? String(err.message) : 'Failed to import candidates';
+      console.error('[Import all] Error:', errMsg, err);
+      toast.error(errMsg);
+    } finally {
+      setIsImportingAll(false);
     }
   };
 
@@ -1664,7 +1842,9 @@ const handleAddCandidate = async (e) => {
       setEditId(null);
       setFormData(initialFormState);
       setFormErrors({});
-      fetchData(1, { search: searchQuery, position: filterJob });
+      const pageToRestore = currentPage;
+      await fetchData(1, { search: searchQuery, position: filterJob });
+      setCurrentPage(pageToRestore);
     } else {
       const errJson = await response.json();
       toast.error('Error: ' + errJson.message);
@@ -1680,7 +1860,9 @@ const handleAddCandidate = async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus })
     });
-    fetchData(1, { search: searchQuery, position: filterJob });
+    const pageToRestore = currentPage;
+    await fetchData(1, { search: searchQuery, position: filterJob });
+    setCurrentPage(pageToRestore);
   };
 
   // ✅ Handle CTC Dropdown Change
@@ -1690,7 +1872,9 @@ const handleAddCandidate = async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ctc: newCtc })
     });
-    fetchData(1, { search: searchQuery, position: filterJob });
+    const pageToRestore = currentPage;
+    await fetchData(1, { search: searchQuery, position: filterJob });
+    setCurrentPage(pageToRestore);
   };
 
   // ✅ Handle Expected CTC Dropdown Change
@@ -1700,7 +1884,9 @@ const handleAddCandidate = async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ expectedCtc: newExpectedCtc })
     });
-    fetchData(1, { search: searchQuery, position: filterJob });
+    const pageToRestore = currentPage;
+    await fetchData(1, { search: searchQuery, position: filterJob });
+    setCurrentPage(pageToRestore);
   };
 
   // ✅ Handle Notice Period Dropdown Change
@@ -1710,7 +1896,9 @@ const handleAddCandidate = async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ noticePeriod: newNoticePeriod })
     });
-    fetchData(1, { search: searchQuery, position: filterJob });
+    const pageToRestore = currentPage;
+    await fetchData(1, { search: searchQuery, position: filterJob });
+    setCurrentPage(pageToRestore);
   };
 
   // ✅ Handle Source of CV Dropdown Change
@@ -1720,7 +1908,9 @@ const handleAddCandidate = async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source: newSource })
     });
-    fetchData(1, { search: searchQuery, position: filterJob });
+    const pageToRestore = currentPage;
+    await fetchData(1, { search: searchQuery, position: filterJob });
+    setCurrentPage(pageToRestore);
   };
 
   // ✅ HELPER: Validate and Auto-Fix Email
@@ -1808,6 +1998,8 @@ const handleAddCandidate = async (e) => {
         matchesSearch = (c.location || '').toLowerCase().includes(q);
       } else if (searchScope === 'company') {
         matchesSearch = (c.companyName || '').toLowerCase().includes(q);
+      } else if (searchScope === 'client') {
+        matchesSearch = (c.client || '').toLowerCase().includes(q);
       } else {
         matchesSearch =
           (c.name || '').toLowerCase().includes(q) ||
@@ -1959,8 +2151,8 @@ const handleAddCandidate = async (e) => {
       label: 'Resume',
       render: (candidate) => candidate.resume ? (
         <div className="flex items-center gap-1">
-          {candidate.resume && <button onClick={() => handleResumePreview(candidate.resume)} title="Preview Resume" className="p-1.5 rounded-lg cursor-pointer" style={{backgroundColor: 'var(--info-bg)', color: 'var(--info-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-bg)'; }}><Eye size={15} /></button>}
-          <a href={candidate.resume.startsWith('http') ? candidate.resume : `${BASE_API_URL}${candidate.resume}`} download title="Download Resume" className="p-1.5 rounded-lg" style={{backgroundColor: 'var(--success-bg)', color: 'var(--success-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-bg)'; }}><Download size={15} /></a>
+          <button onClick={() => handleResumePreview(candidate)} title="Preview Resume" className="p-1.5 rounded-lg cursor-pointer" style={{backgroundColor: 'var(--info-bg)', color: 'var(--info-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--info-bg)'; }}><Eye size={15} /></button>
+          <button onClick={() => handleResumeDownload(candidate)} title="Download Resume" className="p-1.5 rounded-lg" style={{backgroundColor: 'var(--success-bg)', color: 'var(--success-main)'}} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-light)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--success-bg)'; }}><Download size={15} /></button>
         </div>
       ) : <span className="text-gray-300">—</span>
     },
@@ -2029,16 +2221,24 @@ const handleAddCandidate = async (e) => {
               {candidate.status}
             </span>
             {hasTooltip && (
-              <div className="relative group">
-                <button className="p-1 rounded-full hover:bg-gray-100 transition-colors" title="View remark">
-                  <Info size={16} className="text-gray-400 hover:text-gray-600" />
-                </button>
-                <div className="absolute z-[100] hidden group-hover:block top-full left-1/2 -translate-x-1/2 mt-2 w-64 max-w-[90vw] p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal">
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-white drop-shadow-none"></div>
-                  <div className="font-semibold text-gray-500 mb-1">Remark</div>
-                  <div className="leading-relaxed">{remark}</div>
-                </div>
-              </div>
+              <button
+                type="button"
+                className="p-1 rounded-full hover:bg-gray-100 transition-colors"
+                title="View remark"
+                onMouseEnter={(e) => {
+                  if (remarkPopoverTimeoutRef.current) clearTimeout(remarkPopoverTimeoutRef.current);
+                  const r = e.currentTarget.getBoundingClientRect();
+                  const centerX = r.left + r.width / 2;
+                  const iconTop = r.top;
+                  const showAbove = iconTop > 140;
+                  setRemarkPopover({ left: centerX, top: iconTop, remark, showAbove });
+                }}
+                onMouseLeave={() => {
+                  remarkPopoverTimeoutRef.current = setTimeout(() => setRemarkPopover(null), 150);
+                }}
+              >
+                <Info size={16} className="text-gray-400 hover:text-gray-600" />
+              </button>
             )}
           </div>
         );
@@ -2184,8 +2384,8 @@ const handleAddCandidate = async (e) => {
       }, 200);
       
     } catch (error) {
-      console.error('❌ Error importing:', error);
-      toast.error('Import error: ' + error.message);
+      console.error('❌ [Import single record] Error:', error?.message, error);
+      toast.error('Import error: ' + (error?.message != null ? String(error.message) : 'Unknown error'));
     }
   };
 
@@ -2253,8 +2453,9 @@ const handleAddCandidate = async (e) => {
         });
       }
     } catch (error) {
-      console.error(`❌ [IMPORT] Error:`, error);
-      toast.error(`Import error: ${error.message}`);
+      const msg = error?.message != null ? String(error.message) : 'Unknown error';
+      console.error('[Import reviewed] Error:', msg, error);
+      toast.error(`Import error: ${msg}`);
     }
   };
 
@@ -2319,24 +2520,55 @@ const handleAddCandidate = async (e) => {
       <div className="mb-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-gray-200">
           <div className="flex-1">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
                 All Candidates
               </h1>
+              {/* Show only mine / View all — professional segmented control */}
+              <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-1 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setCandidatesViewMode('mine')}
+                  className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${candidatesViewMode === 'mine' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}`}
+                >
+                  Show only mine
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCandidatesViewMode('all')}
+                  className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${candidatesViewMode === 'all' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}`}
+                >
+                  View all
+                </button>
+              </div>
             </div>
             <p className="text-gray-500 text-xs mt-0.5">
               {filteredCandidates.length.toLocaleString()} records
               {searchQuery && <span> matching &ldquo;{searchQuery}&rdquo;</span>}
             </p>
-            {filteredCandidates.some(c => c._isShared) && (
-              <button
-                onClick={handleImportSharedToMineClick}
-                disabled={isImportingShared}
-                className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
-              >
-                {isImportingShared ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
-                {isImportingShared ? 'Importing...' : (selectedIds.length > 0 ? `Import ${selectedIds.length} to my candidates` : 'Import all to my candidates')}
-              </button>
+            {candidatesViewMode === 'all' && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleImportAllToMineClick}
+                  disabled={isImportingShared || isImportingAll}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                  title="Copy every candidate in the database into your list (skips ones you already own)"
+                >
+                  {isImportingAll ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
+                  {isImportingAll ? 'Importing...' : 'Import all from database'}
+                </button>
+                {filteredCandidates.some(c => c._isShared) && (
+                  <button
+                    onClick={handleImportSharedToMineClick}
+                    disabled={isImportingShared || isImportingAll}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+                    title="Import only candidates that were shared with you by a team member"
+                  >
+                    {isImportingShared ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
+                    {isImportingShared ? 'Importing...' : (selectedIds.length > 0 ? `Import ${selectedIds.length} shared` : 'Import shared to my candidates')}
+                  </button>
+                )}
+              </div>
             )}
           </div>
           
@@ -2446,14 +2678,25 @@ const handleAddCandidate = async (e) => {
             <option value="position">Position only</option>
             <option value="location">Location only</option>
             <option value="company">Company only</option>
+            <option value="client">Client only</option>
           </select>
           <input
             type="text"
-            placeholder={searchScope === 'all' ? 'Search by name, email, position, location or SPOC...' : `Search in ${searchScope}...`}
+            placeholder={searchScope === 'all' ? 'Search by name, email, position, location, client or SPOC...' : `Search in ${searchScope}...`}
             className="flex-1 min-w-[200px] outline-none text-gray-700 bg-transparent"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
+          {(searchScope !== 'all' || searchQuery.trim()) && (
+            <button
+              type="button"
+              onClick={() => { setSearchScope('all'); setSearchQuery(''); setCurrentPage(1); }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 border border-gray-200 transition-colors"
+              title="Clear search and field filter"
+            >
+              <X size={16} /> Clear filter
+            </button>
+          )}
         </div>
 
         {/* ADVANCED SEARCH BUTTON & DOWNLOAD BUTTON */}
@@ -2842,7 +3085,31 @@ const handleAddCandidate = async (e) => {
             )}
           </tbody>
         </table>
-      </div>             
+      </div>
+
+      {/* Remark popover via portal so it is not cut off by table overflow */}
+      {remarkPopover && createPortal(
+        <div
+          className="fixed z-[9999] w-64 max-w-[90vw] p-3 bg-white text-gray-800 text-xs rounded-lg shadow-xl border border-gray-200 whitespace-normal"
+          style={{
+            left: Math.max(8, Math.min(remarkPopover.left - 128, typeof window !== 'undefined' ? window.innerWidth - 264 : 0)),
+            ...(remarkPopover.showAbove
+              ? { top: Math.max(8, remarkPopover.top - 8), transform: 'translateY(-100%)' }
+              : { top: remarkPopover.top + 24 })
+          }}
+          onMouseEnter={() => { if (remarkPopoverTimeoutRef.current) clearTimeout(remarkPopoverTimeoutRef.current); }}
+          onMouseLeave={() => setRemarkPopover(null)}
+        >
+          {remarkPopover.showAbove ? (
+            <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-200" style={{ borderTopColor: 'white' }} />
+          ) : (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-white" />
+          )}
+          <div className="font-semibold text-gray-500 mb-1">Remark</div>
+          <div className="leading-relaxed">{remarkPopover.remark}</div>
+        </div>,
+        document.body
+      )}
 
       {/* Sentinel for lazy-loading more rows */}
       <div ref={loadMoreRef} />
@@ -2986,6 +3253,7 @@ const handleAddCandidate = async (e) => {
                     <select name="experience" value={formData.experience || ''} onChange={handleInputChange}
                       className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium">
                       <option value="">Select</option>
+                      <option value="Fresher">Fresher</option>
                       {[...Array(31).keys()].slice(1).map(num => <option key={num} value={num}>{num}</option>)}
                     </select>
                   </div>
@@ -3003,7 +3271,7 @@ const handleAddCandidate = async (e) => {
                     <select name="expectedCtc" value={formData.expectedCtc || ''} onChange={handleInputChange}
                       className="w-full px-4 py-2.5 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-all text-sm font-medium max-h-52">
                       <option value="">Select Expected CTC</option>
-                      {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
+                      {expectedCtcOptions.map(range => <option key={range} value={range}>{range}</option>)}
                     </select>
                   </div>
                   <div>
@@ -4530,9 +4798,9 @@ const handleAddCandidate = async (e) => {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50">
               <h3 className="text-lg font-bold text-gray-900">Resume Preview</h3>
               <div className="flex items-center gap-3">
-                <a href={previewResumeUrl} download className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors flex items-center gap-2">
+                <button type="button" onClick={() => previewResumeCandidate && handleResumeDownload(previewResumeCandidate)} className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors flex items-center gap-2">
                   <Download size={16} /> Download
-                </a>
+                </button>
                 <button onClick={closeResumePreview} className="p-2 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer">
                   <X size={20} className="text-gray-600" />
                 </button>
@@ -4544,7 +4812,18 @@ const handleAddCandidate = async (e) => {
                   <RefreshCw size={32} className="text-indigo-500 animate-spin" />
                   <p className="text-gray-500 font-medium">Loading preview...</p>
                 </div>
-              ) : previewBlobUrl ? (
+              ) : previewResumeError === 'file_not_found' ? (
+                <div className="flex flex-col items-center gap-4 p-6 text-center max-w-md">
+                  <AlertCircle size={40} className="text-amber-500" />
+                  <p className="text-gray-700 font-medium">Resume file not found on this server</p>
+                  <p className="text-sm text-gray-500">
+                    The file may have been uploaded on the live site. View it there, or re-upload the resume for this candidate here.
+                  </p>
+                  <button type="button" onClick={() => previewResumeCandidate && handleResumeDownload(previewResumeCandidate)} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+                    Try Download
+                  </button>
+                </div>
+              ) : previewBlobUrl && (previewBlobUrl.startsWith('http') || previewBlobUrl.startsWith('blob:')) ? (
                 <iframe
                   src={previewBlobUrl}
                   className="w-full h-full border-0"
@@ -4554,9 +4833,9 @@ const handleAddCandidate = async (e) => {
                 <div className="flex flex-col items-center gap-3">
                   <AlertCircle size={32} className="text-red-400" />
                   <p className="text-gray-500 font-medium">Unable to preview this file</p>
-                  <a href={previewResumeUrl} download className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+                  <button type="button" onClick={() => previewResumeCandidate && handleResumeDownload(previewResumeCandidate)} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
                     Download Instead
-                  </a>
+                  </button>
                 </div>
               )}
             </div>
@@ -4593,15 +4872,47 @@ const handleAddCandidate = async (e) => {
         </div>
       )}
 
+      {/* Import all from database: confirm */}
+      {showImportAllConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setShowImportAllConfirm(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Import all candidates from database</h3>
+            <p className="text-gray-600 mb-6">
+              Copy every candidate in the database into your list? Candidates you already own will be skipped. This adds all others as &ldquo;My candidates&rdquo;.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowImportAllConfirm(false)} className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors">Cancel</button>
+              <button onClick={handleImportAllToMine} disabled={isImportingAll} className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50">
+                {isImportingAll ? 'Importing...' : 'Import all'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import all from database: success */}
+      {importAllSuccess !== null && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Candidates imported</h3>
+            <p className="text-gray-600 mb-6">{Number(importAllSuccess.imported) || 0} candidate(s) have been added to your database. You can find them under &ldquo;Show only mine&rdquo; or &ldquo;View all&rdquo;.</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setImportAllSuccess(null)} className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors">Stay here</button>
+              <button onClick={() => { setImportAllSuccess(null); fetchData(1, { search: '', position: '' }); }} className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors">Go to All Candidates</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Import shared candidates: success */}
       {importSharedSuccess !== null && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
             <h3 className="text-lg font-bold text-gray-900 mb-2">Candidates imported</h3>
-            <p className="text-gray-600 mb-6">{importSharedSuccess.imported} shared candidate(s) have been added to your database.</p>
+            <p className="text-gray-600 mb-6">{Number(importSharedSuccess.imported) || 0} shared candidate(s) have been added to your database.</p>
             <div className="flex gap-3 justify-end">
               <button onClick={() => { setImportSharedSuccess(null); }} className="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors">Stay here</button>
-              <button onClick={() => { setImportSharedSuccess(null); setViewMode('all'); }} className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors">Go to All Candidates</button>
+              <button onClick={() => { setImportSharedSuccess(null); fetchData(1, { search: '', position: '' }); }} className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors">Go to All Candidates</button>
             </div>
           </div>
         </div>

@@ -73,7 +73,6 @@ const Header = ({ setSidebarOpen, sidebarOpen }) => {
 
         {/* Right Section */}
         <div className="flex items-center gap-1 sm:gap-3 flex-shrink-0">
-          {/* Notifications */}
           <NotificationBell />
 
           {/* User Profile Dropdown */}

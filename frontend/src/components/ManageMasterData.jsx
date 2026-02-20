@@ -169,38 +169,10 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
     }
   };
 
-  // In "View all" mode, show one row per unique name (dedupe across users)
+  // In "View all" mode, show all records so every row can be edited/deleted by any user
   const displayList = useMemo(() => {
-    if (!viewAllMode) return data;
-    const norm = (name) => (name || '').trim().toLowerCase();
-    const byKey = {};
-    data.forEach((item) => {
-      const key = norm(item.name);
-      if (!key) return;
-      if (!byKey[key]) {
-        byKey[key] = {
-          addKey: `add-${key}`,
-          name: item.name,
-          description: item.description,
-          isMine: false,
-          myItem: null,
-          isActive: item.isActive
-        };
-      }
-      const g = byKey[key];
-      if (item.isMine) {
-        g.isMine = true;
-        g.myItem = item;
-        g.name = item.name;
-        g.description = item.description != null ? item.description : g.description;
-      }
-    });
-    return Object.values(byKey).map(g => ({
-      ...g,
-      _id: g.myItem?._id,
-      isActive: g.myItem?.isActive ?? g.isActive
-    }));
-  }, [data, viewAllMode]);
+    return data;
+  }, [data]);
 
   const filteredData = useMemo(() => {
     const list = displayList.filter(item =>
@@ -250,18 +222,18 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
 
         {/* Tabs (left) + Search & Add New (right) - enterprise style */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-0 rounded-lg border-2 border-slate-200 bg-slate-50/50 p-0.5">
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-1 shadow-sm">
             <button
               type="button"
               onClick={() => setViewAllMode(false)}
-              className={`rounded-md px-4 py-2 text-sm font-medium transition-all ${!viewAllMode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${!viewAllMode ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}`}
             >
               Show only mine
             </button>
             <button
               type="button"
               onClick={() => setViewAllMode(true)}
-              className={`rounded-md px-4 py-2 text-sm font-medium transition-all ${viewAllMode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${viewAllMode ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}`}
             >
               View all
             </button>
@@ -308,8 +280,8 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
         </div>
 
         {viewAllMode && (
-          <p className="mb-4 text-sm text-slate-600 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
-            One row per unique name. You can edit or delete only the ones you added. Use <strong>+ Add to my list</strong> to copy others’ entries.
+          <p className="mb-4 text-sm text-slate-600 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2.5">
+            All users can edit or delete any entry. Use <strong>+ Copy to my list</strong> to copy others’ entries.
           </p>
         )}
 
@@ -340,13 +312,10 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                       </td>
                     </tr>
                   ) : (
-                    filteredData.map((item) => {
+                    filteredData.map((item, index) => {
                       const isMine = viewAllMode && item.isMine === true;
-                      const canEditDelete = !viewAllMode || isMine;
-                      const rowKey = item._id || item.addKey || item.name;
-                      const editDeleteItem = (viewAllMode && item.myItem) ? item.myItem : item;
                       return (
-                        <tr key={rowKey} className={`hover:bg-slate-50 ${viewAllMode && !isMine ? 'bg-slate-50/50' : ''}`}>
+                        <tr key={item._id || `row-${index}-${(item.name || '').slice(0, 20)}`} className={`hover:bg-slate-50 ${viewAllMode && !isMine ? 'bg-slate-50/50' : ''}`}>
                           <td className="px-6 py-4 text-sm text-slate-900 font-medium">{item.name}</td>
                           {viewAllMode && (
                             <td className="px-6 py-4 text-sm">
@@ -364,39 +333,36 @@ const ManageMasterData = ({ title, apiEndpoint, navigateBack }) => {
                             </span>
                           </td>
                           <td className="px-6 py-4 text-sm">
-                            {canEditDelete ? (
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => openModal(editDeleteItem)}
-                                  className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                  title="Edit"
-                                >
-                                  <Edit size={16} />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteConfirm(editDeleteItem)}
-                                  className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                  title="Delete"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            ) : viewAllMode ? (
+                            <div className="flex items-center gap-1">
                               <button
-                                onClick={() => handleAddToMyList(item)}
-                                disabled={addingId === (item._id ?? item.addKey)}
-                                className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
-                                title="Add to my list"
+                                onClick={() => openModal(item)}
+                                className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                title="Edit"
                               >
-                                {addingId === (item._id ?? item.addKey) ? (
-                                  <span className="inline-block w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
-                                ) : (
-                                  <Plus size={16} />
-                                )}
+                                <Edit size={16} />
                               </button>
-                            ) : (
-                              <span className="text-xs text-slate-400">—</span>
-                            )}
+                              <button
+                                onClick={() => handleDeleteConfirm(item)}
+                                className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                title="Delete"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                              {viewAllMode && !isMine && (
+                                <button
+                                  onClick={() => handleAddToMyList(item)}
+                                  disabled={addingId === item._id}
+                                  className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors disabled:opacity-50"
+                                  title="Copy to my list"
+                                >
+                                  {addingId === item._id ? (
+                                    <span className="inline-block w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                                  ) : (
+                                    <Plus size={16} />
+                                  )}
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );

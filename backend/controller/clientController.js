@@ -65,20 +65,20 @@ const createClient = async (req, res) => {
   }
 };
 
-// Update a client
+// Update a client (any authenticated user can edit any client)
 const updateClient = async (req, res) => {
   try {
+    if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
     const { id } = req.params;
     const { name, description, isActive } = req.body;
 
-    const client = await Client.findOne({ _id: id, createdBy: req.user.id });
+    const client = await Client.findOne({ _id: id });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
 
     if (name) {
       const existingClient = await Client.findOne({
-        createdBy: req.user.id,
         name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
         _id: { $ne: id },
         isActive: true
@@ -110,12 +110,13 @@ const updateClient = async (req, res) => {
   }
 };
 
-// Delete a client (hard delete from database for this user only)
+// Delete a client (any authenticated user can delete any client)
 const deleteClient = async (req, res) => {
   try {
+    if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
     const { id } = req.params;
 
-    const result = await Client.deleteOne({ _id: id, createdBy: req.user.id });
+    const result = await Client.deleteOne({ _id: id });
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Client not found' });
     }

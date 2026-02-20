@@ -69,6 +69,11 @@ const is100PercentCorrect = (candidate) => {
     return emailCheck.isValid && mobileCheck.isValid && nameCheck.isValid;
 };
 
+// Single canonical uploads dir (same as server.js static and resume route) so files are always findable
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const fs = require('fs');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
 // Multer Setup with increased file size limits
 const memoryUpload = multer({ 
     storage: multer.memoryStorage(),
@@ -76,9 +81,8 @@ const memoryUpload = multer({
 });
 const diskUpload = multer({ 
     storage: multer.diskStorage({
-        destination: 'uploads/',
+        destination: (req, file, cb) => cb(null, UPLOADS_DIR),
         filename: (req, file, cb) => {
-            // Keep original extension for proper MIME type serving
             const ext = path.extname(file.originalname) || '.pdf';
             const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + ext;
             cb(null, uniqueName);
@@ -130,7 +134,8 @@ router.get('/', async (req, res) => {
         const hasAnyFilter = search || position || location || companyName || hasRangeFilter;
 
         // Build MongoDB filter - scope by the logged-in user (own + shared with me)
-        const viewMode = (req.query.view || '').trim();
+        const viewModeRaw = (req.query.view || '').trim();
+        const viewMode = viewModeRaw.toLowerCase(); // accept "all", "All", "ALL"
         const userIdRaw = req.user && req.user.id;
         if (!userIdRaw) {
             return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -155,14 +160,18 @@ router.get('/', async (req, res) => {
                 ? { 'sharedWith.userId': { $in: [userIdObj, userIdStr] } }
                 : { 'sharedWith.userId': userIdStr };
 
-            if (viewMode === 'shared') {
+            if (viewMode === 'all') {
+                // All users can see all candidates (no filter by creator)
+                filter = {};
+                Candidate.countDocuments({}).then(n => console.log('📊 Backend Query - view=all, total in DB:', n, '(req.query.view=', req.query.view + ')')).catch(() => {});
+            } else if (viewMode === 'shared') {
                 filter = sharedClause;
             } else {
+                // 'mine' or default: own + shared with me
                 filter = { $or: [createdByClause, sharedClause] };
             }
         } catch (filterErr) {
             console.error('⚠️ Error building filter:', filterErr.message);
-            // Fallback: fetch all candidates
             filter = {};
         }
 
@@ -181,24 +190,28 @@ router.get('/', async (req, res) => {
             console.log(`📊 Backend Query - filter matched ${candidates.length} records`);
         } catch (queryErr) {
             console.error('❌ Database query error:', queryErr.message);
-            // Fallback 1: try with string filter only
-            try {
-                const stringFilter = { createdBy: userIdStr };
-                let stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
-                if (shouldPaginate && !hasAnyFilter) {
-                    stringQuery = stringQuery.limit(limit).skip(skip);
+            // Fallback 1: only use user filter when NOT view=all (for view=all we must not limit to current user)
+            if (viewMode !== 'all') {
+                try {
+                    const stringFilter = { createdBy: userIdStr };
+                    let stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
+                    if (shouldPaginate && !hasAnyFilter) {
+                        stringQuery = stringQuery.limit(limit).skip(skip);
+                    }
+                    candidates = await stringQuery;
+                    if (candidates.length > 0) usedStringFallback = true;
+                    console.log(`📊 Backend Query - fallback matched ${candidates.length} records by string`);
+                } catch (fallbackErr) {
+                    console.error('❌ Fallback query also failed:', fallbackErr.message);
+                    candidates = [];
                 }
-                candidates = await stringQuery;
-                if (candidates.length > 0) usedStringFallback = true;
-                console.log(`📊 Backend Query - fallback matched ${candidates.length} records by string`);
-            } catch (fallbackErr) {
-                console.error('❌ Fallback query also failed:', fallbackErr.message);
+            } else {
                 candidates = [];
             }
         }
 
-        // If main query returned 0 (no throw), try createdBy as string
-        if (candidates.length === 0 && viewMode !== 'shared' && !usedStringFallback) {
+        // If main query returned 0 (no throw), try createdBy as string — only when NOT view=all
+        if (candidates.length === 0 && viewMode !== 'shared' && viewMode !== 'all' && !usedStringFallback) {
             try {
                 const stringFilter = { createdBy: userIdStr };
                 let stringQuery = Candidate.find(stringFilter).sort({ createdAt: -1 }).lean();
@@ -213,8 +226,8 @@ router.get('/', async (req, res) => {
             }
         }
 
-        // Fallback 2: if still 0, include orphan/legacy records (no createdBy)
-        if (candidates.length === 0 && viewMode !== 'shared') {
+        // Fallback 2: if still 0, include orphan/legacy records (no createdBy) — for view=all we already did find({})
+        if (candidates.length === 0 && viewMode !== 'shared' && viewMode !== 'all') {
             try {
                 const orphanFilter = { $or: [{ createdBy: { $exists: false } }, { createdBy: null }] };
                 orphanCountForTotal = await Candidate.countDocuments(orphanFilter);
@@ -232,14 +245,14 @@ router.get('/', async (req, res) => {
             }
         }
 
-        // Mark shared candidates so the frontend can distinguish them (orphans with no createdBy count as "own")
+        // Mark shared candidates: only those explicitly shared with current user (sharedWith contains userId).
+        // This matches import-shared behavior so "Import all to my candidates" only sends importable IDs.
         let ownerIds = new Set();
         try {
             candidates.forEach(c => {
-                const hasOwner = c.createdBy != null && String(c.createdBy) !== '';
-                const isOwn = !hasOwner || String(c.createdBy) === userIdStr;
-                c._isShared = !isOwn;
-                if (!isOwn && hasOwner) ownerIds.add(String(c.createdBy));
+                const sharedWithMe = Array.isArray(c.sharedWith) && c.sharedWith.some(sw => String(sw && sw.userId) === userIdStr);
+                c._isShared = !!sharedWithMe;
+                if (sharedWithMe && c.createdBy != null && String(c.createdBy) !== '') ownerIds.add(String(c.createdBy));
             });
         } catch (markErr) {
             console.warn('⚠️ Error marking shared candidates:', markErr.message);
@@ -532,7 +545,6 @@ router.post('/bulk-upload', diskUpload.single('file'), (req, res, next) => {
 
 // --- 5. RESUME PARSING LOGIC (Enhanced Enterprise Version) ---
 const { parseResume } = require('../services/resumeParser');
-const fs = require('fs');
 router.post('/parse-logic', memoryUpload.single('resume'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "File missing" });
@@ -680,10 +692,54 @@ router.get('/pending', async (req, res) => {
     }
 });
 
-// --- 6.5 GET SINGLE CANDIDATE BY ID ---
+// --- 6.4 GET CANDIDATE RESUME FILE (any user can view/download any candidate's resume) ---
+router.get('/:id/resume', async (req, res) => {
+    try {
+        if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
+        const candidate = await Candidate.findOne({ _id: req.params.id }).select('resume').lean();
+        if (!candidate || !candidate.resume) {
+            return res.status(404).json({ message: 'Resume not found' });
+        }
+        const rawPath = String(candidate.resume).replace(/^\/+/, '').trim();
+        const filename = path.basename(rawPath);
+        // Try all possible locations: backend/uploads, path from DB, cwd/uploads, project-root/uploads
+        const tries = [
+            path.join(UPLOADS_DIR, filename),
+            rawPath.includes(path.sep) ? path.join(__dirname, '..', rawPath) : null,
+            path.join(process.cwd(), 'uploads', filename),
+            path.join(process.cwd(), '..', 'uploads', filename),
+            path.join(__dirname, '..', 'uploads', filename)
+        ].filter(Boolean);
+        let filePath = null;
+        for (const p of tries) {
+            if (fs.existsSync(p)) {
+                filePath = p;
+                break;
+            }
+        }
+        if (!filePath) {
+            console.error('[Resume] File not found:', { candidateId: req.params.id, resumeField: candidate.resume, tried: tries, uploadsDir: UPLOADS_DIR, cwd: process.cwd() });
+            return res.status(404).json({ message: 'Resume file not found' });
+        }
+        const ext = path.extname(filePath).toLowerCase();
+        const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+        res.setHeader('Content-Disposition', disposition);
+        if (['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.doc', '.docx'].includes(ext)) {
+            const mime = { '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+            res.setHeader('Content-Type', mime[ext] || 'application/octet-stream');
+        }
+        res.sendFile(path.resolve(filePath));
+    } catch (err) {
+        console.error('Error serving resume:', err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// --- 6.5 GET SINGLE CANDIDATE BY ID (any user can view any candidate) ---
 router.get('/:id', async (req, res) => {
     try {
-        const candidate = await Candidate.findOne({ _id: req.params.id, createdBy: req.user.id });
+        if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
+        const candidate = await Candidate.findOne({ _id: req.params.id });
         if (!candidate) {
             return res.status(404).json({ message: 'Candidate not found' });
         }
@@ -697,15 +753,15 @@ router.get('/:id', async (req, res) => {
 // --- 7. UPDATE CANDIDATE ---
 router.put('/:id', diskUpload.single('resume'), candidateController.updateCandidate);
 
-// --- 8. DELETE CANDIDATE ---
+// --- 8. DELETE CANDIDATE (any user can delete any candidate) ---
 router.delete('/:id', async (req, res) => {
     try {
+        if (!req.user?.id) return res.status(401).json({ success: false, message: 'Unauthorized' });
         const { id } = req.params;
-        // Only delete if candidate belongs to the logged-in user
-        const deletedCandidate = await Candidate.findOneAndDelete({ _id: id, createdBy: req.user.id });
+        const deletedCandidate = await Candidate.findOneAndDelete({ _id: id });
 
         if (!deletedCandidate) {
-            return res.status(404).json({ success: false, message: "Candidate not found or access denied" });
+            return res.status(404).json({ success: false, message: "Candidate not found" });
         }
 
         res.status(200).json({ success: true, message: "Candidate deleted successfully" });
@@ -714,18 +770,16 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// --- 8A2. BULK DELETE CANDIDATES (by IDs array) ---
+// --- 8A2. BULK DELETE CANDIDATES (any user can delete any candidates) ---
 router.post('/bulk-delete', async (req, res) => {
     try {
+        if (!req.user?.id) return res.status(401).json({ success: false, message: 'Unauthorized' });
         const { ids } = req.body;
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             return res.status(400).json({ success: false, message: 'No candidate IDs provided' });
         }
 
-        const result = await Candidate.deleteMany({
-            _id: { $in: ids },
-            createdBy: req.user.id
-        });
+        const result = await Candidate.deleteMany({ _id: { $in: ids } });
 
         res.json({
             success: true,
@@ -876,6 +930,7 @@ router.post('/share', candidateController.shareCandidate);
 
 // Import shared candidates into current user's database (copy as own)
 router.post('/import-shared', candidateController.importSharedCandidates);
+router.post('/import-all-to-mine', candidateController.importAllToMine);
 
 // ================= PENDING CANDIDATES (Review / Blocked) — GET /pending is defined above before /:id =================
 // Save review/blocked records from auto import

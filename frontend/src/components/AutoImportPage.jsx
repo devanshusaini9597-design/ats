@@ -6,7 +6,7 @@ import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
 import BASE_API_URL from '../config';
-import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
+import { ctcRanges, expectedCtcOptions, noticePeriodOptions } from '../utils/ctcRanges';
 import { formatNameForInput } from '../utils/textFormatter';
 
 const DRAFT_KEY = 'autoImportDraft';
@@ -97,21 +97,24 @@ const AutoImportPage = () => {
     }
   }, [reviewData, stats, fileName]);
 
-  // Warn on refresh or closing tab when import data is loaded
+  // Warn on refresh or closing tab when import data is loaded or upload in progress
+  const hasImportData = !!(reviewData && (reviewData.ready?.length || reviewData.review?.length || reviewData.blocked?.length));
   useEffect(() => {
-    const hasData = !!(reviewData && (reviewData.ready?.length || reviewData.review?.length || reviewData.blocked?.length));
     const handler = (e) => {
-      if (hasData) {
+      if (isUploading) {
         e.preventDefault();
-        e.returnValue = 'Import data is loaded. If you leave or refresh, you will need to upload the file again. Your draft may be restored when you return.';
+        e.returnValue = 'Upload is in progress. Leaving or refreshing may interrupt the upload.';
+      } else if (hasImportData) {
+        e.preventDefault();
+        e.returnValue = 'You have import data on this page. If you leave or refresh, you may need to upload the file again. Your draft may be restored when you return.';
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [reviewData]);
+  }, [reviewData, hasImportData, isUploading]);
 
-  // Block in-app navigation when import data is loaded (sidebar click, back button, etc.)
-  const hasUnsavedData = !!(reviewData && (reviewData.ready?.length || reviewData.review?.length || reviewData.blocked?.length));
+  // Block in-app navigation when import data is loaded or upload in progress (sidebar click, back, etc.)
+  const hasUnsavedData = hasImportData || isUploading;
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
       hasUnsavedData && currentLocation.pathname !== nextLocation.pathname
@@ -878,10 +881,11 @@ const AutoImportPage = () => {
                         );
                       }
                       if (type === 'select-ctc') {
+                        const opts = field === 'expectedCtc' ? expectedCtcOptions : ctcRanges;
                         return (
                           <select value={fixedVal} onChange={(e) => updateFixed(e.target.value)} className={inputClass}>
                             <option value="">Select</option>
-                            {ctcRanges.map(r => <option key={r} value={r}>{r}</option>)}
+                            {opts.map(r => <option key={r} value={r}>{r}</option>)}
                           </select>
                         );
                       }
@@ -1010,35 +1014,39 @@ const AutoImportPage = () => {
           </div>
         )}
 
-        {/* Navigation warning modal - shown when user tries to leave with unsaved import data */}
+        {/* Navigation warning modal - shown when user tries to leave during upload or with unsaved import data */}
         {blocker.state === 'blocked' && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
-                  <AlertTriangle size={24} className="text-amber-600" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-lg font-bold text-gray-900 mb-2">Unsaved Import Data</h3>
-                  <p className="text-sm text-gray-600 mb-4">
-                    You have unsaved import data. If you leave now, your data will be lost and you will need to upload the file again.
-                  </p>
-                  <p className="text-xs text-gray-500 mb-4">
-                    Your draft may be restored if you return to this page in a new session.
-                  </p>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => blocker.reset?.()}
-                      className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
-                    >
-                      Stay
-                    </button>
-                    <button
-                      onClick={() => blocker.proceed?.()}
-                      className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
-                    >
-                      Leave
-                    </button>
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
+              <div className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 ${isUploading ? 'bg-blue-100' : 'bg-amber-100'}`}>
+                    {isUploading ? <Loader2 size={24} className="text-blue-600 animate-spin" /> : <AlertTriangle size={24} className="text-amber-600" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">
+                      {isUploading ? 'Upload in progress' : 'Leave Auto Import?'}
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      {isUploading
+                        ? 'Your file is still uploading. If you leave or refresh now, the upload may be interrupted and you will need to start again.'
+                        : 'You have import data on this page. If you leave now, you may need to upload the file again. Your draft may be restored when you return.'}
+                    </p>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => blocker.reset?.()}
+                        className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+                      >
+                        Stay
+                      </button>
+                      <button
+                        onClick={() => blocker.proceed?.()}
+                        disabled={isUploading}
+                        className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${isUploading ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        Leave anyway
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

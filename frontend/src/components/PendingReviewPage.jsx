@@ -6,7 +6,7 @@ import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
 import ConfirmationModal from './ConfirmationModal';
-import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
+import { ctcRanges, expectedCtcOptions, noticePeriodOptions } from '../utils/ctcRanges';
 import { formatNameForInput } from '../utils/textFormatter';
 
 const RECORDS_PER_PAGE = 50;
@@ -589,10 +589,11 @@ const PendingReviewPage = () => {
                         );
                       }
                       if (type === 'select-ctc') {
+                        const opts = field === 'expectedCtc' ? expectedCtcOptions : ctcRanges;
                         return (
                           <select value={fixedVal} onChange={(e) => { setEditData(prev => ({ ...prev, [field]: e.target.value })); setEditFormErrors(prev => ({ ...prev, [field]: '' })); }} className={inputClass}>
                             <option value="">Select</option>
-                            {ctcRanges.map(r => <option key={r} value={r}>{r}</option>)}
+                            {opts.map(r => <option key={r} value={r}>{r}</option>)}
                           </select>
                         );
                       }

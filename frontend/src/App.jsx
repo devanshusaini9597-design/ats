@@ -1,5 +1,7 @@
 import React from 'react';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { GlobalLoaderProvider } from './context/GlobalLoaderContext';
+import GlobalLoader from './components/GlobalLoader';
 import Home from './components/Home';
 import Login from './components/Login';
 import Register from './components/Register';
@@ -49,9 +51,12 @@ const router = createBrowserRouter([
 
 function App() {
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--bg-secondary)' }}>
-      <RouterProvider router={router} />
-    </div>
+    <GlobalLoaderProvider>
+      <GlobalLoader />
+      <div className="min-h-screen" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+        <RouterProvider router={router} />
+      </div>
+    </GlobalLoaderProvider>
   );
 }
 

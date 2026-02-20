@@ -2215,13 +2215,14 @@ exports.updateCandidate = async (req, res) => {
         const textFields = ['name', 'position', 'companyName', 'location', 'client', 'spoc', 'source', 'noticePeriod', 'fls', 'remark'];
         textFields.forEach(f => { if (req.body[f] && typeof req.body[f] === 'string') req.body[f] = normalizeText(req.body[f]); });
 
-        // Only update if candidate belongs to the logged-in user
+        // Enterprise: any authenticated user can update any candidate. Do not allow changing ownership.
+        const { createdBy, _id, __v, ...safeBody } = req.body;
         const updatedCandidate = await Candidate.findOneAndUpdate(
-            { _id: id, createdBy: req.user.id },
-            { $set: req.body },
+            { _id: id },
+            { $set: safeBody },
             { new: true, runValidators: true }
         );
-        if (!updatedCandidate) return res.status(404).json({ success: false, message: "Candidate not found or access denied" });
+        if (!updatedCandidate) return res.status(404).json({ success: false, message: "Candidate not found" });
         res.status(200).json({ success: true, message: "Updated Successfully", data: updatedCandidate });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -2375,14 +2376,23 @@ exports.shareCandidate = async (req, res) => {
 // Import shared candidates into current user's database (copy as own candidates)
 exports.importSharedCandidates = async (req, res) => {
     try {
+        const mongoose = require('mongoose');
         const { candidateIds } = req.body;
         const userId = req.user.id;
-        const ids = Array.isArray(candidateIds) ? candidateIds : [candidateIds];
-        if (!ids.length) {
+        const rawIds = Array.isArray(candidateIds) ? candidateIds : (candidateIds != null ? [candidateIds] : []);
+        if (!rawIds.length) {
             return res.status(400).json({ success: false, message: 'candidateIds array is required' });
         }
+        // Convert to ObjectIds with 'new' to avoid "Class constructor ObjectId cannot be invoked without 'new'"
+        const ids = rawIds
+            .filter(id => id != null && id !== '')
+            .map(id => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null))
+            .filter(Boolean);
+        if (ids.length === 0) {
+            return res.status(400).json({ success: false, message: 'No valid candidate IDs provided' });
+        }
 
-        const userIdObj = require('mongoose').Types.ObjectId.isValid(userId) ? new require('mongoose').Types.ObjectId(userId) : userId;
+        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
         const shared = await Candidate.find({
             _id: { $in: ids },
             'sharedWith.userId': userIdObj
@@ -2412,6 +2422,43 @@ exports.importSharedCandidates = async (req, res) => {
         });
     } catch (error) {
         console.error('Import shared error:', error);
+        res.status(500).json({ success: false, message: error.message || 'Server error' });
+    }
+};
+
+// Import all candidates (from database) into current user's list (copy as own). Skips already-owned.
+exports.importAllToMine = async (req, res) => {
+    try {
+        const mongoose = require('mongoose');
+        const userId = req.user.id;
+        const userIdObj = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+
+        const allCandidates = await Candidate.find({}).lean();
+        const toImport = allCandidates.filter(c => {
+            const owner = c.createdBy != null ? String(c.createdBy) : '';
+            return owner !== String(userId);
+        });
+
+        const created = [];
+        for (const c of toImport) {
+            const { _id, createdBy, sharedWith, createdAt, __v, ...rest } = c;
+            const doc = new Candidate({
+                ...rest,
+                createdBy: userId,
+                sharedWith: []
+            });
+            await doc.save();
+            created.push({ id: doc._id, name: doc.name });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `Imported ${created.length} candidate(s) to your database`,
+            imported: created.length,
+            details: created
+        });
+    } catch (error) {
+        console.error('Import all to mine error:', error);
         res.status(500).json({ success: false, message: error.message || 'Server error' });
     }
 };

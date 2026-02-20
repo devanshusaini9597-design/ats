@@ -15,6 +15,9 @@ for (let i = 10; i <= 49; i++) {
 
 export const ctcRanges = [...baseRanges, ...extendedRanges, 'Above 50L'];
 
+/** Expected CTC options: "As Per Company Norms" first, then ctcRanges (for Expected CTC dropdown only). */
+export const expectedCtcOptions = ['As Per Company Norms', ...ctcRanges];
+
 /** LPA breakpoints for mapping a numeric value to range index (for sort/display). */
 export const ctcLpaBreakpoints = [
   0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 8, 9, 10,

@@ -19,6 +19,7 @@ export const authenticatedFetch = (url, options = {}) => {
   return fetch(url, {
     ...options,
     headers,
+    credentials: options.credentials !== undefined ? options.credentials : 'include',
   }).then(response => {
     // Auto-logout if user was deleted from DB
     if (response.status === 401) {

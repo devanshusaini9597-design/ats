@@ -71,22 +71,20 @@ const createPosition = async (req, res) => {
   }
 };
 
-// Update a position
+// Update a position (any authenticated user can edit any position)
 const updatePosition = async (req, res) => {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
     const { id } = req.params;
     const { name, description, isActive } = req.body;
 
-    const position = await Position.findOne({ _id: id, createdBy: userId });
+    const position = await Position.findOne({ _id: id });
     if (!position) {
       return res.status(404).json({ message: 'Position not found' });
     }
 
     if (name) {
       const existingPosition = await Position.findOne({
-        createdBy: userId,
         name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
         _id: { $ne: id },
         isActive: true
@@ -118,14 +116,13 @@ const updatePosition = async (req, res) => {
   }
 };
 
-// Delete a position (hard delete from database for this user only)
+// Delete a position (any authenticated user can delete any position)
 const deletePosition = async (req, res) => {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!req.user?.id) return res.status(401).json({ message: 'Unauthorized' });
     const { id } = req.params;
 
-    const result = await Position.deleteOne({ _id: id, createdBy: userId });
+    const result = await Position.deleteOne({ _id: id });
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Position not found' });
     }

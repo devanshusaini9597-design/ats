@@ -49,14 +49,23 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware
-const allowedOrigins = [
+// Middleware — CORS: allow live frontend + any localhost (for local dev on any port)
+const allowedOriginList = [
   "https://skillnix-ats-frontend.onrender.com",
   "http://localhost:5173",
   "http://localhost:5174",
+  "http://localhost:3000",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:3000",
   process.env.FRONTEND_URL
 ].filter(Boolean);
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+function corsOrigin(origin, cb) {
+  if (!origin) return cb(null, true);
+  if (allowedOriginList.indexOf(origin) !== -1) return cb(null, origin);
+  if (/^https?:\/\/localhost(:\d+)?$/i.test(origin) || /^https?:\/\/127\.0\.0\.1(:\d+)?$/i.test(origin)) return cb(null, origin);
+  return cb(null, false);
+}
+app.use(cors({ origin: corsOrigin, credentials: true }));
 // JSON parsing with limit
 app.use(express.json({ limit: '100mb' }));
 app.use('/api/companies', companyRoutes);  // Protected
@@ -78,9 +87,9 @@ app.use('/api/company-email-settings', verifyToken, companyEmailSettingsRoutes);
 app.use('/api/notifications', verifyToken, notificationRoutes);  // Protected
 app.use('/api/team', teamRoutes);  // Protected (verifyToken inside router)
 
-// Static Folder for Uploads - serve with inline disposition for preview
-const uploadDir = 'uploads';
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+// Static Folder for Uploads - always use backend/uploads (same as candidateRoutes resume + multer)
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 app.use('/uploads', (req, res, next) => {
   const ext = path.extname(req.path).toLowerCase();
   
@@ -115,7 +124,7 @@ app.use('/uploads', (req, res, next) => {
     }
   }
   next();
-}, express.static(path.join(__dirname, 'uploads')));
+}, express.static(uploadDir));
 
 // Health check endpoint (for Render)
 app.get('/health', (req, res) => res.json({ status: 'ok', version: 'v2', timestamp: new Date().toISOString() }));
@@ -514,7 +523,7 @@ app.put('/api/profile', verifyToken, async (req, res) => {
 const multerProfile = require('multer');
 const profilePicUpload = multerProfile({
     storage: multerProfile.diskStorage({
-        destination: 'uploads/',
+        destination: path.join(__dirname, 'uploads'),
         filename: (req, file, cb) => {
             const ext = path.extname(file.originalname) || '.jpg';
             cb(null, `profile-${req.user.id}-${Date.now()}${ext}`);

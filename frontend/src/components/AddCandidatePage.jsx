@@ -7,7 +7,8 @@ import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
 import { formatByFieldName } from '../utils/textFormatter';
-import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
+import { ctcRanges, expectedCtcOptions, noticePeriodOptions } from '../utils/ctcRanges';
+import { dedupeByName } from '../utils/dedupeMasterData';
 
 const AddCandidatePage = () => {
   const navigate = useNavigate();
@@ -64,24 +65,24 @@ const AddCandidatePage = () => {
         const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
 
         const [positionsRes, clientsRes, sourcesRes] = await Promise.all([
-          fetch(`${BASE_API_URL}/api/positions`, { headers }),
-          fetch(`${BASE_API_URL}/api/clients`, { headers }),
-          fetch(`${BASE_API_URL}/api/sources`, { headers })
+          fetch(`${BASE_API_URL}/api/positions/all`, { headers }),
+          fetch(`${BASE_API_URL}/api/clients/all`, { headers }),
+          fetch(`${BASE_API_URL}/api/sources/all`, { headers })
         ]);
 
         if (positionsRes.ok) {
           const positionsData = await positionsRes.json();
-          setPositions(positionsData);
+          setPositions(dedupeByName(positionsData));
         }
 
         if (clientsRes.ok) {
           const clientsData = await clientsRes.json();
-          setClients(clientsData);
+          setClients(dedupeByName(clientsData));
         }
 
         if (sourcesRes.ok) {
           const sourcesData = await sourcesRes.json();
-          setSources(sourcesData);
+          setSources(dedupeByName(sourcesData));
         }
       } catch (error) {
         console.error('Error fetching master data:', error);
@@ -649,7 +650,7 @@ const AddCandidatePage = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all max-h-52"
                   >
                     <option value="">Select Expected CTC</option>
-                    {ctcRanges.map(range => (
+                    {expectedCtcOptions.map(range => (
                       <option key={range} value={range}>{range}</option>
                     ))}
                   </select>

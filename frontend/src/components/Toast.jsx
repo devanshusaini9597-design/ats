@@ -106,7 +106,8 @@ export const ToastProvider = ({ children }) => {
 
   const addToast = useCallback((type, message, duration = 4000) => {
     const id = ++toastIdCounter;
-    const newToast = { id, type, message };
+    const safeMessage = message != null ? String(message) : '';
+    const newToast = { id, type, message: safeMessage };
     setToasts((prev) => [...prev.slice(-4), newToast]); // max 5 toasts
     timersRef.current[id] = setTimeout(() => dismiss(id), duration);
     return id;

@@ -585,7 +585,8 @@ import BASE_API_URL from '../config';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import useCountries from '../utils/useCountries';
 import { useToast } from './Toast';
-import { ctcRanges, noticePeriodOptions } from '../utils/ctcRanges';
+import { ctcRanges, expectedCtcOptions, noticePeriodOptions } from '../utils/ctcRanges';
+import { dedupeByName } from '../utils/dedupeMasterData';
 
 const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId }) => {
     if (!show) return null;
@@ -633,24 +634,24 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                 const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
 
                 const [positionsRes, clientsRes, sourcesRes] = await Promise.all([
-                    fetch(`${BASE_API_URL}/api/positions`, { headers }),
-                    fetch(`${BASE_API_URL}/api/clients`, { headers }),
-                    fetch(`${BASE_API_URL}/api/sources`, { headers })
+                    fetch(`${BASE_API_URL}/api/positions/all`, { headers }),
+                    fetch(`${BASE_API_URL}/api/clients/all`, { headers }),
+                    fetch(`${BASE_API_URL}/api/sources/all`, { headers })
                 ]);
 
                 if (positionsRes.ok) {
                     const positionsData = await positionsRes.json();
-                    setPositions(positionsData);
+                    setPositions(dedupeByName(positionsData));
                 }
 
                 if (clientsRes.ok) {
                     const clientsData = await clientsRes.json();
-                    setClients(clientsData);
+                    setClients(dedupeByName(clientsData));
                 }
 
                 if (sourcesRes.ok) {
                     const sourcesData = await sourcesRes.json();
-                    setSources(sourcesData);
+                    setSources(dedupeByName(sourcesData));
                 }
             } catch (error) {
                 console.error('Error fetching master data:', error);
@@ -976,6 +977,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Experience (Years)</label>
                             <select name="experience" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm" value={formData.experience || ''} onChange={handleInputChange}>
                                 <option value="">Select</option>
+                                <option value="Fresher">Fresher</option>
                                 {[...Array(31).keys()].slice(1).map(num => <option key={num} value={num}>{num}</option>)}
                             </select>
                         </div>
@@ -992,7 +994,7 @@ const CandidateModal = ({ show, onClose, onSubmit, formData, setFormData, editId
                             <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Expected CTC (LPA)</label>
                             <select name="expectedCtc" className="w-full p-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#6366f1] outline-none bg-white text-sm max-h-52" value={formData.expectedCtc || ''} onChange={handleInputChange}>
                                 <option value="">Select Expected CTC</option>
-                                {ctcRanges.map(range => <option key={range} value={range}>{range}</option>)}
+                                {expectedCtcOptions.map(range => <option key={range} value={range}>{range}</option>)}
                             </select>
                         </div>
 
