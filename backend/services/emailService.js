@@ -3,49 +3,13 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 
 /**
- * ═══════════════════════════════════════════════════════════════════════════════
- * EMAIL SERVICE - ENTERPRISE ARCHITECTURE
- * ═══════════════════════════════════════════════════════════════════════════════
+ * EMAIL SERVICE
  * 
- * MULTI-LEVEL EMAIL CONFIGURATION PATTERN:
- * This service implements a 2-tier email configuration hierarchy:
- * 
- * TIER 1: PER-USER EMAIL SETTINGS (User Override)
- * ─────────────────────────────────────────────────
- * Location: MongoDB User.emailSettings
- * Purpose: Allow individual employees to configure their own email (Zoho or SMTP)
- * Use Case: Sales team uses personal Gmail, HR team uses shared Zoho account
- * Preference: HIGHEST - If user has config, it's used first
- * 
- * TIER 2: COMPANY-WIDE EMAIL SETTINGS (Enterprise Default)
- * ─────────────────────────────────────────────────────────
- * Location: MongoDB CompanyEmailConfig collection
- * Purpose: Company owner/admin configures ONCE, ALL 30-50 employees use automatically
- * Use Case: Zoho Zeptomail under review, company buys 1 account for entire team
- * Preference: SECONDARY - Falls back if user has no personal config
- * Philosophy: Like Slack, Notion, Zapier - "company admin sets up once, everyone uses"
- * 
- * TIER 3: DEFAULT (Environment Variables)
- * ────────────────────────────────────────
- * Location: .env file
- * Purpose: Fallback for development or systems without config
- * Preference: LOWEST - Only used if no user or company config exists
- * 
- * PRIORITY FLOW (getUserTransporter):
- * 1. User has IS_CONFIGURED + Zoho key? → Use user's personal Zoho
- * 2. User has IS_CONFIGURED + SMTP config? → Use user's personal SMTP
- * 3. Company has IS_CONFIGURED + Zoho key? → Use company's shared Zoho (ALL employees share this)
- * 4. Company has IS_CONFIGURED + SMTP config? → Use company's shared SMTP
- * 5. Neither user nor company configured? → Return error, no email can be sent
- * 
- * DATABASE SECURITY NOTES:
- * ────────────────────────
- * ✅ API Keys NEVER returned to frontend in full (only masked with •••••)
- * ✅ API Keys stored at-rest in MongoDB (uses env-based encryption if available)
- * ✅ API Keys only leaked via HTTPS to authenticated backend
- * ✅ All email config endpoints require verifyToken (JWT authentication)
- * ⚠️  TODO: Add role-based check (admin/owner only) at route level
- * ⚠️  TODO: Implement field-level encryption for CompanyEmailConfig.zohoZeptomailApiKey
+ * Priority (both getUserTransporter AND checkUserEmailConfigured):
+ *   0. .env ZOHO_ZEPTOMAIL_API_KEY  →  ZeptoMail (always default when set)
+ *   1. User personal SMTP/Zoho      →  Hostinger or custom SMTP
+ *   2. Company-wide config           →  CompanyEmailConfig collection
+ *   3. Nothing configured            →  Error
  */
 
 // ─── Default (global) transporter from .env ───
@@ -83,6 +47,15 @@ const initializeTransporter = () => {
 };
 
 initializeTransporter();
+
+// ─── Zoho Zeptomail: normalize Authorization header value ───
+// ZeptoMail sends token as "Zoho-enczapikey <key>". Accept that or raw key; never duplicate prefix.
+const getZohoAuthHeaderValue = (apiKey) => {
+  if (!apiKey || typeof apiKey !== 'string') return '';
+  const k = apiKey.trim();
+  if (k.toLowerCase().startsWith('zoho-enczapikey')) return k;
+  return `Zoho-enczapikey ${k}`;
+};
 
 // ─── Zoho Zeptomail API Helper ───
 /**
@@ -157,51 +130,67 @@ const sendViaZohoZeptomail = async (to, subject, htmlBody, textBody, options = {
   }
 
   try {
+    const apiEndpoint = zohoApiUrl.endsWith('/') 
+      ? `${zohoApiUrl}v1.1/email`
+      : `${zohoApiUrl}/v1.1/email`;
+    
+    const authHeader = getZohoAuthHeaderValue(zohoApiKey);
+    const keyPreview = authHeader.length > 30 
+      ? `${authHeader.substring(0, 25)}...${authHeader.substring(authHeader.length - 6)}`
+      : authHeader;
+    console.log(`[ZeptoMail] POST ${apiEndpoint} | from=${fromEmail} | auth=${keyPreview} (${authHeader.length} chars)`);
+
     const response = await axios.post(
-      `${zohoApiUrl}api/v1.1/mail/send`,
+      apiEndpoint,
       payload,
       {
         headers: {
-          'Authorization': `Zoho-enauth ${zohoApiKey}`,
+          'Authorization': authHeader,
           'Content-Type': 'application/json'
         },
         timeout: 30000
       }
     );
 
-    console.log(`✅ Email sent via Zoho Zeptomail to ${recipients.join(', ')} (from: ${fromEmail})`);
+    const messageId = response.data?.data?.message_id || 'zoho_' + Date.now();
+    console.log(`✅ Zoho Zeptomail accepted: to=${recipients.join(', ')} from=${fromEmail} messageId=${messageId}`);
     if (cc) console.log(`   CC: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
     if (bcc) console.log(`   BCC: ${Array.isArray(bcc) ? bcc.join(', ') : bcc}`);
 
     return { 
       success: true, 
       email: to, 
-      messageId: response.data?.data?.message_id || 'zoho_' + Date.now() 
+      messageId
     };
   } catch (error) {
     console.error('❌ Zoho Zeptomail Error:', {
       message: error.message,
       status: error.response?.status,
-      data: error.response?.data,
+      data: JSON.stringify(error.response?.data, null, 2),
       email: to,
       from: fromEmail
     });
 
-    // ⚠️  USER-FRIENDLY ERROR MESSAGES
-    // Map HTTP status codes to clear explanations for frontend UI
+    const zohoError = error.response?.data?.error;
+    const zohoCode = zohoError?.code;
+    const details = Array.isArray(zohoError?.details) ? zohoError.details : [];
+    const sm111 = details.find(d => d && d.code === 'SM_111');
+    const status = error.response?.status;
+
     let errorMsg = error.message;
-    if (error.response?.status === 401) {
-      // 401 = Invalid Authorization header (bad API key, expired, wrong account)
-      errorMsg = `Zoho Zeptomail authentication failed. Your API key may be invalid, expired, or the account is not active.`;
-    } else if (error.response?.status === 429) {
-      // 429 = Rate limit exceeded (Zoho free tier: 100 emails/day)
-      errorMsg = `Rate limit exceeded. You've hit the daily email limit (usually 100/day for free accounts). Try again tomorrow or upgrade your Zoho plan.`;
+    if (sm111) {
+      errorMsg = `ZeptoMail: Sender address not verified. "${sm111.target_value || 'from'}" is not verified in your ZeptoMail agent. Emails are sent from your verified address (check .env ZOHO_ZEPTOMAIL_FROM_EMAIL).`;
+    } else if (status === 401) {
+      errorMsg = 'ZeptoMail: Invalid API key. Check your Send Mail Token in ZeptoMail dashboard.';
+    } else if (status === 403) {
+      console.error('ZeptoMail 403 – IP may be blocked. Remove all IP restrictions in ZeptoMail > Agent > Settings > IP Restriction to allow all IPs.', { code: zohoCode, data: error.response?.data });
+      errorMsg = 'ZeptoMail 403: Request Denied. Go to ZeptoMail > your Agent > Settings > IP Restriction and remove all IPs (empty list = allow all).';
+    } else if (status === 429) {
+      errorMsg = 'ZeptoMail rate limit hit. Try again later or upgrade your plan.';
     } else if (error.code === 'ECONNABORTED') {
-      // Timeout error (network issues or Zoho API slow)
-      errorMsg = `Connection timeout. Zoho API didn't respond in time. This usually means network issues or Zoho service is slow.`;
+      errorMsg = 'ZeptoMail timeout. Network issue or Zoho service is slow.';
     } else if (error.response?.data?.message) {
-      // Use Zoho's error message if provided
-      errorMsg = error.response.data.message;
+      errorMsg = `ZeptoMail: ${error.response.data.message}`;
     }
 
     const err = new Error(errorMsg);
@@ -211,8 +200,7 @@ const sendViaZohoZeptomail = async (to, subject, htmlBody, textBody, options = {
 };
 
 // ─── Get per-user transporter (supports SMTP and Zoho Zeptomail) ───
-// ✅ ENTERPRISE MODE: Checks user config FIRST, then falls back to company-wide config
-// This allows all 30-50 employees to use the SAME Zoho API key without individual setup
+// ✅ Zoho from .env is ALWAYS DEFAULT when set; user/company config only used when env Zoho is not set
 const getUserTransporter = async (userId) => {
   try {
     if (!userId) return { transporter: null, fromEmail: null, userName: '', configured: false, provider: null };
@@ -220,7 +208,28 @@ const getUserTransporter = async (userId) => {
     const User = mongoose.model('User');
     const user = await User.findById(userId).select('emailSettings name email');
     
-    // ✅ PRIORITY 1: Check if user has per-user configuration (allows overrides)
+    // PRIORITY 0: .env Zoho ZeptoMail — only same-domain user can send; sender = user email, name = user name
+    const envKey = process.env.ZOHO_ZEPTOMAIL_API_KEY;
+    const envFrom = process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL;
+    if (envKey && envFrom && String(envKey).trim() && String(envFrom).trim()) {
+      const verifiedDomain = envFrom.includes('@') ? String(envFrom).trim().split('@')[1].toLowerCase() : '';
+      const userEmail = user?.email ? String(user.email).trim() : '';
+      const userDomain = userEmail.includes('@') ? userEmail.split('@')[1].toLowerCase() : '';
+      const useUserAsSender = userEmail && verifiedDomain && userDomain === verifiedDomain;
+      return {
+        transporter: null,
+        fromEmail: useUserAsSender ? userEmail : (userEmail || null),
+        userName: user?.name || '',
+        configured: true,
+        provider: 'zoho-zeptomail',
+        zohoApiKey: envKey,
+        zohoApiUrl: (process.env.ZOHO_ZEPTOMAIL_API_URL || 'https://api.zeptomail.in/').replace(/\/?$/, '/'),
+        userId: userId,
+        configSource: 'env'
+      };
+    }
+    
+    // ✅ PRIORITY 1: User per-user configuration (only when env Zoho not set)
     if (user?.emailSettings?.isConfigured) {
       const s = user.emailSettings;
 
@@ -295,7 +304,7 @@ const getUserTransporter = async (userId) => {
       }
     }
 
-    // ❌ No configuration found (neither user nor company)
+    // ❌ No configuration found (env Zoho not set, no user config, no company config)
     return { 
       transporter: null, 
       fromEmail: null, 
@@ -365,14 +374,21 @@ const createSmtpTransporter = (emailSettings) => {
 const sendEmail = async (to, subject, htmlBody, textBody, options = {}) => {
   const { cc, bcc, senderName, senderEmail, userId } = options;
   
-  // Get the right transporter (user-specific only — no global fallback)
   const { transporter: activeTransporter, fromEmail, userName, configured, provider, zohoApiKey, zohoApiUrl } = await getUserTransporter(userId);
   
   if (!configured || !fromEmail) {
     throw new Error('EMAIL_NOT_CONFIGURED');
   }
   
-  // Use Zoho Zeptomail if configured
+  if (provider === 'zoho-zeptomail' && userId) {
+    const senderStatus = await canUserSendViaZepto(userId);
+    if (!senderStatus.canSend) {
+      const err = new Error(senderStatus.reason || 'USE_VERIFIED_DOMAIN');
+      err.code = 'USE_VERIFIED_DOMAIN';
+      throw err;
+    }
+  }
+  
   if (provider === 'zoho-zeptomail') {
     return await sendViaZohoZeptomail(to, subject, htmlBody, textBody, {
       cc,
@@ -583,14 +599,72 @@ const sendBulkEmails = async (recipients, subject, htmlBody, textBody, options =
 };
 
 // Check if a user has email configured (for pre-flight checks)
+// ✅ Now checks BOTH user personal config AND company-wide config
 const checkUserEmailConfigured = async (userId) => {
   try {
+    // PRIORITY 0: .env Zoho ZeptoMail — always available, no DB query needed
+    if (process.env.ZOHO_ZEPTOMAIL_API_KEY && process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL) {
+      if (String(process.env.ZOHO_ZEPTOMAIL_API_KEY).trim() && String(process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL).trim()) {
+        return true;
+      }
+    }
+
     if (!userId) return false;
+
     const User = mongoose.model('User');
     const user = await User.findById(userId).select('emailSettings');
-    return !!(user?.emailSettings?.isConfigured && user.emailSettings.smtpEmail && user.emailSettings.smtpAppPassword);
+
+    // PRIORITY 1: User personal SMTP (Hostinger etc.)
+    if (user?.emailSettings?.isConfigured) {
+      if (user.emailSettings.emailProvider === 'zoho-zeptomail') {
+        return !!(user.emailSettings.zohoZeptomailApiKey && user.emailSettings.zohoZeptomailFromEmail);
+      }
+      return !!(user.emailSettings.smtpEmail && user.emailSettings.smtpAppPassword);
+    }
+
+    // PRIORITY 2: Company-wide config
+    try {
+      const CompanyEmailConfig = mongoose.model('CompanyEmailConfig');
+      const companyConfig = await CompanyEmailConfig.findOne({ companyId: 'default-company' });
+      if (companyConfig?.isConfigured) {
+        if (companyConfig.primaryProvider === 'zoho-zeptomail') {
+          return !!(companyConfig.zohoZeptomailApiKey && companyConfig.zohoZeptomailFromEmail);
+        }
+        return !!(companyConfig.smtpEmail && companyConfig.smtpAppPassword);
+      }
+    } catch (_) { /* continue */ }
+
+    return false;
   } catch {
     return false;
+  }
+};
+
+const getVerifiedZeptoDomain = () => {
+  const from = (process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL || '').trim();
+  if (!from || !from.includes('@')) return '';
+  return from.split('@')[1].toLowerCase();
+};
+
+const canUserSendViaZepto = async (userId) => {
+  if (!userId) return { canSend: false, reason: 'Not logged in', verifiedDomain: '' };
+  const verifiedDomain = getVerifiedZeptoDomain();
+  if (!verifiedDomain) return { canSend: false, reason: 'No verified sender configured', verifiedDomain: '' };
+  if (!(process.env.ZOHO_ZEPTOMAIL_API_KEY || '').trim()) return { canSend: false, reason: 'ZeptoMail not configured', verifiedDomain };
+  try {
+    const User = mongoose.model('User');
+    const user = await User.findById(userId).select('email');
+    const userEmail = (user?.email || '').trim();
+    if (!userEmail || !userEmail.includes('@')) return { canSend: false, reason: 'Use your company verified email to send (e.g. name@' + verifiedDomain + ')', verifiedDomain };
+    const userDomain = userEmail.split('@')[1].toLowerCase();
+    const canSend = userDomain === verifiedDomain;
+    return {
+      canSend,
+      verifiedDomain,
+      reason: canSend ? '' : 'You cannot send emails using a personal email address. Please log in with your company verified email (e.g. name@' + verifiedDomain + ') to send emails.'
+    };
+  } catch {
+    return { canSend: false, reason: 'Unable to verify sender', verifiedDomain };
   }
 };
 
@@ -603,5 +677,8 @@ module.exports = {
   sendCustomEmail,
   sendBulkEmails,
   checkUserEmailConfigured,
-  getUserTransporter
+  getUserTransporter,
+  getZohoAuthHeaderValue,
+  canUserSendViaZepto,
+  getVerifiedZeptoDomain
 };

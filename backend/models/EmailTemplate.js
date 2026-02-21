@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const emailTemplateSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
-  category: { type: String, enum: ['hiring', 'interview', 'rejection', 'onboarding', 'document', 'custom'], default: 'custom' },
+  category: { type: String, enum: ['hiring', 'interview', 'rejection', 'onboarding', 'document', 'marketing', 'custom'], default: 'custom' },
   subject: { type: String, required: true, trim: true },
   body: { type: String, required: true },
   isDefault: { type: Boolean, default: false },

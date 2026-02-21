@@ -7,8 +7,22 @@ const {
   sendOnboardingEmail,
   sendCustomEmail,
   sendBulkEmails,
-  checkUserEmailConfigured
+  checkUserEmailConfigured,
+  canUserSendViaZepto
 } = require('../services/emailService');
+
+/**
+ * Sender status for ZeptoMail — only verified-domain users can send
+ * GET /api/email/sender-status
+ */
+router.get('/sender-status', async (req, res) => {
+  try {
+    const status = await canUserSendViaZepto(req.user?.id);
+    res.json({ success: true, ...status });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 /**
  * 📧 Send single email to a candidate
@@ -96,6 +110,9 @@ router.post('/send', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Send Email Error:', error);
+    if (error.code === 'USE_VERIFIED_DOMAIN') {
+      return res.status(400).json({ success: false, message: error.message, code: 'USE_VERIFIED_DOMAIN' });
+    }
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to send email'
@@ -164,6 +181,9 @@ router.post('/send-bulk', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Bulk Email Error:', error);
+    if (error.code === 'USE_VERIFIED_DOMAIN') {
+      return res.status(400).json({ success: false, message: error.message, code: 'USE_VERIFIED_DOMAIN' });
+    }
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to send bulk emails'
@@ -298,6 +318,68 @@ router.post('/test', async (req, res) => {
       success: false,
       message: error.message || 'Failed to send test email'
     });
+  }
+});
+
+// ─── Marketing email via Zoho Campaigns ───
+router.post('/send-marketing', async (req, res) => {
+  try {
+    const { recipients, subject, htmlBody, campaignName, trackOpens, trackClicks } = req.body;
+
+    if (!recipients || !recipients.length) {
+      return res.status(400).json({ success: false, message: 'Recipients are required' });
+    }
+    if (!subject || !htmlBody) {
+      return res.status(400).json({ success: false, message: 'Subject and HTML body are required' });
+    }
+
+    const { sendMarketingEmail, isCampaignsConfigured } = require('../services/campaignService');
+
+    if (!isCampaignsConfigured()) {
+      return res.status(400).json({
+        success: false,
+        message: 'CAMPAIGNS_NOT_CONFIGURED',
+        displayMessage: 'Zoho Campaigns is not configured. Add ZOHO_CAMPAIGNS_API_KEY to server settings.'
+      });
+    }
+
+    const result = await sendMarketingEmail(
+      recipients,
+      subject,
+      htmlBody,
+      {
+        userId: req.user.id,
+        campaignName: campaignName || `ats_campaign_${Date.now()}`,
+        trackOpens: trackOpens !== false,
+        trackClicks: trackClicks !== false
+      }
+    );
+
+    res.json({ success: true, message: `Marketing email queued to ${result.sent} recipient(s)`, data: result.data });
+  } catch (error) {
+    console.error('Marketing email error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to send marketing email' });
+  }
+});
+
+// ─── Check which email channels are available ───
+router.get('/channels', async (req, res) => {
+  try {
+    const { isCampaignsConfigured } = require('../services/campaignService');
+    const { checkUserEmailConfigured } = require('../services/emailService');
+
+    const transactional = await checkUserEmailConfigured(req.user?.id);
+    const marketing = isCampaignsConfigured();
+
+    res.json({
+      success: true,
+      channels: {
+        transactional: { available: transactional, provider: 'ZeptoMail' },
+        marketing: { available: marketing, provider: 'Zoho Campaigns' }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

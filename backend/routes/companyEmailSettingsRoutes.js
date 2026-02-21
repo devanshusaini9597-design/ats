@@ -3,6 +3,7 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
+const { getZohoAuthHeaderValue } = require('../services/emailService');
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -163,8 +164,13 @@ router.put('/zoho-zeptomail', async (req, res) => {
 
     // Test Zoho Zeptomail API credentials before saving
     try {
+      const apiUrl = zohoZeptomailApiUrl || 'https://api.zeptomail.com/';
+      const apiEndpoint = apiUrl.endsWith('/') 
+        ? `${apiUrl}v1.1/email`
+        : `${apiUrl}/v1.1/email`;
+      
       const testResponse = await axios.post(
-        `${zohoZeptomailApiUrl || 'https://api.zeptomail.com/'}api/v1.1/mail/send`,
+        apiEndpoint,
         {
           from: {
             address: zohoZeptomailFromEmail.trim(),
@@ -181,7 +187,7 @@ router.put('/zoho-zeptomail', async (req, res) => {
         },
         {
           headers: {
-            'Authorization': `Zoho-enauth ${zohoZeptomailApiKey}`,
+            'Authorization': getZohoAuthHeaderValue(zohoZeptomailApiKey),
             'Content-Type': 'application/json'
           },
           timeout: 15000
@@ -354,8 +360,13 @@ router.post('/test', async (req, res) => {
     // Test based on primary provider
     if (config.primaryProvider === 'zoho-zeptomail') {
       try {
+        const apiUrl = config.zohoZeptomailApiUrl || 'https://api.zeptomail.com/';
+        const apiEndpoint = apiUrl.endsWith('/') 
+          ? `${apiUrl}v1.1/email`
+          : `${apiUrl}/v1.1/email`;
+        
         await axios.post(
-          `${config.zohoZeptomailApiUrl}api/v1.1/mail/send`,
+          apiEndpoint,
           {
             from: { address: config.zohoZeptomailFromEmail, name: 'Skillnix Test' },
             to: [{ email_address: { address: config.zohoZeptomailFromEmail } }],
@@ -365,7 +376,7 @@ router.post('/test', async (req, res) => {
           },
           {
             headers: {
-              'Authorization': `Zoho-enauth ${config.zohoZeptomailApiKey}`,
+              'Authorization': getZohoAuthHeaderValue(config.zohoZeptomailApiKey),
               'Content-Type': 'application/json'
             },
             timeout: 30000

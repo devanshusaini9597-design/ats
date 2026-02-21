@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Mail, Plus, Edit3, Trash2, Eye, Copy, Search, X, Save, FileText, Send, ChevronDown, Briefcase, Phone, XCircle, UserCheck, FileCheck, Sparkles, Check, AlertCircle } from 'lucide-react';
+import { Mail, Plus, Edit3, Trash2, Eye, Copy, Search, X, Save, FileText, Send, ChevronDown, Briefcase, Phone, XCircle, UserCheck, FileCheck, Sparkles, Check, AlertCircle, Megaphone } from 'lucide-react';
 import Layout from './Layout';
 import { authenticatedFetch, isUnauthorized, handleUnauthorized } from '../utils/fetchUtils';
 import { useToast } from './Toast';
@@ -14,6 +14,7 @@ const CATEGORY_META = {
   rejection:  { label: 'Rejection',      icon: XCircle,   color: 'red',    bg: 'bg-red-50',     text: 'text-red-700',    ring: 'ring-red-400',    badge: 'bg-red-100 text-red-700' },
   onboarding: { label: 'Onboarding',     icon: UserCheck,  color: 'green',  bg: 'bg-green-50',   text: 'text-green-700',  ring: 'ring-green-400',  badge: 'bg-green-100 text-green-700' },
   document:   { label: 'Document',       icon: FileCheck, color: 'amber',  bg: 'bg-amber-50',   text: 'text-amber-700',  ring: 'ring-amber-400',  badge: 'bg-amber-100 text-amber-700' },
+  marketing:  { label: 'Marketing',      icon: Megaphone, color: 'fuchsia', bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-400', badge: 'bg-fuchsia-100 text-fuchsia-700' },
   custom:     { label: 'Custom',         icon: Sparkles,  color: 'purple', bg: 'bg-purple-50',  text: 'text-purple-700', ring: 'ring-purple-400', badge: 'bg-purple-100 text-purple-700' },
 };
 
@@ -28,6 +29,7 @@ const VARIABLE_OPTIONS = [
   { key: 'time', label: 'Time', example: '10:00 AM', isTime: true },
   { key: 'venue', label: 'Venue / Address', example: 'Shyampur, Rishikesh' },
   { key: 'spoc', label: 'SPOC Name', example: 'Mr. XYZ' },
+  { key: 'unsubscribeLink', label: 'Unsubscribe Link (Marketing)', example: '#unsubscribe' },
 ];
 
 const EmailTemplatesPage = () => {

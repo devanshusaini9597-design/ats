@@ -81,9 +81,8 @@ router.delete('/:id', async (req, res) => {
 // ─── SEND email using template ───
 router.post('/send', async (req, res) => {
   try {
-    const { templateId, recipients, variables, cc, bcc } = req.body;
-    // recipients: [{ email, name }] or single { email, name }
-    // variables: { candidateName, position, company, ctc, location, date, time, venue, spoc, ... }
+    const { templateId, recipients, variables, cc, bcc, channel } = req.body;
+    // channel: 'transactional' (default, ZeptoMail) or 'marketing' (Zoho Campaigns)
 
     if (!templateId) return res.status(400).json({ success: false, message: 'Template ID is required' });
     
@@ -98,16 +97,26 @@ router.post('/send', async (req, res) => {
       return res.status(400).json({ success: false, message: 'At least one recipient email is required' });
     }
 
+    const isMarketing = channel === 'marketing';
+
+    if (isMarketing) {
+      const { sendMarketingEmail, isCampaignsConfigured } = require('../services/campaignService');
+      if (!isCampaignsConfigured()) {
+        return res.status(400).json({ success: false, message: 'CAMPAIGNS_NOT_CONFIGURED', displayMessage: 'Zoho Campaigns is not configured.' });
+      }
+    }
+
     const { sendEmail, checkUserEmailConfigured } = require('../services/emailService');
-    
-    // Check if user has email configured before attempting to send
-    const isConfigured = await checkUserEmailConfigured(req.user.id);
-    if (!isConfigured) {
-      return res.status(400).json({
-        success: false,
-        message: 'EMAIL_NOT_CONFIGURED',
-        displayMessage: 'Please configure your email settings first. Go to Email → Email Settings to set up your email address.'
-      });
+
+    if (!isMarketing) {
+      const isConfigured = await checkUserEmailConfigured(req.user.id);
+      if (!isConfigured) {
+        return res.status(400).json({
+          success: false,
+          message: 'EMAIL_NOT_CONFIGURED',
+          displayMessage: 'Please configure your email settings first. Go to Email → Email Settings to set up your email address.'
+        });
+      }
     }
     
     const results = { success: [], failed: [] };
@@ -212,9 +221,16 @@ router.post('/send', async (req, res) => {
         if (cc) emailOptions.cc = Array.isArray(cc) ? cc : cc.split(',').map(e => e.trim()).filter(Boolean);
         if (bcc) emailOptions.bcc = Array.isArray(bcc) ? bcc : bcc.split(',').map(e => e.trim()).filter(Boolean);
 
-        await sendEmail(recipient.email, emailSubject, htmlBody, emailBody.replace(/<[^>]*>/g, ''), emailOptions);
+        if (isMarketing) {
+          const { sendMarketingEmail } = require('../services/campaignService');
+          await sendMarketingEmail(recipient.email, emailSubject, htmlBody, { userId: req.user.id, senderName });
+        } else {
+          await sendEmail(recipient.email, emailSubject, htmlBody, emailBody.replace(/<[^>]*>/g, ''), emailOptions);
+        }
         results.success.push(recipient.email);
       } catch (err) {
+        if (err.code === 'USE_VERIFIED_DOMAIN') throw err;
+        console.error('[Send email] Failed for', recipient.email, ':', err.message, err.code || '');
         results.failed.push({ email: recipient.email, error: err.message });
       }
     }
@@ -225,7 +241,10 @@ router.post('/send', async (req, res) => {
       data: results
     });
   } catch (err) {
-    console.error('Template send error:', err);
+    if (err.code === 'USE_VERIFIED_DOMAIN') {
+      return res.status(400).json({ success: false, message: err.message, code: 'USE_VERIFIED_DOMAIN' });
+    }
+    console.error('[Send email] Template send error:', err.message, err);
     res.status(500).json({ success: false, message: err.message });
   }
 });

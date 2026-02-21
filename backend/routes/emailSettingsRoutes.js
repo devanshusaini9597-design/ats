@@ -3,6 +3,7 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
 const axios = require('axios');
+const { getZohoAuthHeaderValue, sendEmail } = require('../services/emailService');
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -93,29 +94,24 @@ router.get('/', async (req, res) => {
     const user = await User.findById(req.user.id).select('emailSettings email name');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Return settings but mask passwords/API keys
     const settings = user.emailSettings || {};
+    const envZohoConfigured = !!(process.env.ZOHO_ZEPTOMAIL_API_KEY && process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL);
+    const isConfigured = !!(settings.isConfigured || envZohoConfigured);
     
     const response = {
       success: true,
       settings: {
-        // SMTP Settings
         smtpEmail: settings.smtpEmail || '',
         smtpAppPassword: settings.smtpAppPassword ? '••••••••••••••••' : '',
-        smtpProvider: settings.smtpProvider || 'gmail',
-        smtpHost: settings.smtpHost || '',
+        smtpProvider: settings.smtpProvider || 'hostinger',
+        smtpHost: settings.smtpHost || 'smtp.hostinger.com',
         smtpPort: settings.smtpPort || 587,
-        
-        // Zoho Zeptomail Settings
-        emailProvider: settings.emailProvider || 'smtp',  // 'smtp' or 'zoho-zeptomail'
-        zohoZeptomailApiKey: settings.zohoZeptomailApiKey ? '••••••••••••••••' : '',
-        zohoZeptomailApiUrl: settings.zohoZeptomailApiUrl || 'https://api.zeptomail.com/',
-        zohoZeptomailFromEmail: settings.zohoZeptomailFromEmail || '',
-        zohoZeptomailBounceAddress: settings.zohoZeptomailBounceAddress || '',
-        
-        isConfigured: settings.isConfigured || false,
+        emailProvider: envZohoConfigured ? 'zoho-zeptomail' : (settings.emailProvider || 'smtp'),
+        zohoZeptomailFromEmail: process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL || settings.zohoZeptomailFromEmail || '',
+        isConfigured,
         hasPassword: !!settings.smtpAppPassword,
-        hasZohoApiKey: !!settings.zohoZeptomailApiKey
+        hasZohoApiKey: !!(envZohoConfigured || settings.zohoZeptomailApiKey),
+        configSource: envZohoConfigured ? 'zeptomail-env' : (settings.isConfigured ? 'user-smtp' : 'none')
       },
       userEmail: user.email,
       userName: user.name
@@ -146,8 +142,13 @@ router.put('/zoho-zeptomail', async (req, res) => {
 
     // Test Zoho Zeptomail API credentials
     try {
+      const apiUrl = zohoZeptomailApiUrl || 'https://api.zeptomail.com/';
+      const apiEndpoint = apiUrl.endsWith('/') 
+        ? `${apiUrl}v1.1/email`
+        : `${apiUrl}/v1.1/email`;
+      
       const testResponse = await axios.post(
-        `${zohoZeptomailApiUrl || 'https://api.zeptomail.com/'}api/v1.1/mail/send`,
+        apiEndpoint,
         {
           from: {
             address: zohoZeptomailFromEmail.trim(),
@@ -164,7 +165,7 @@ router.put('/zoho-zeptomail', async (req, res) => {
         },
         {
           headers: {
-            'Authorization': `Zoho-enauth ${zohoZeptomailApiKey}`,
+            'Authorization': getZohoAuthHeaderValue(zohoZeptomailApiKey),
             'Content-Type': 'application/json'
           },
           timeout: 15000
@@ -438,6 +439,34 @@ router.post('/test', async (req, res) => {
   }
 });
 
+// ─── TEST current email config (user, company, or .env Zoho) ───
+// Use this to test on localhost when Zoho is set in .env and no UI config exists.
+router.post('/test-current', async (req, res) => {
+  try {
+    const User = mongoose.model('User');
+    const user = await User.findById(req.user.id).select('email name');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const toEmail = user.email || req.body.to;
+    if (!toEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail)) {
+      return res.status(400).json({ success: false, message: 'Your account has no email. Provide a valid "to" address in the request body.' });
+    }
+    await sendEmail(
+      toEmail,
+      '✅ Skillnix — ZeptoMail test (localhost)',
+      '<p>If you got this, your current email config (Zoho from .env or Email Settings) is working.</p>',
+      'If you got this, your current email config is working.',
+      { userId: req.user.id }
+    );
+    res.json({ success: true, message: `Test email sent to ${toEmail}. Check your inbox.` });
+  } catch (err) {
+    console.error('Test current email config error:', err);
+    const msg = err.message === 'EMAIL_NOT_CONFIGURED'
+      ? 'No email configured. Add ZOHO_ZEPTOMAIL_API_KEY and ZOHO_ZEPTOMAIL_FROM_EMAIL to backend/.env, or set Email Settings in the app.'
+      : err.message;
+    res.status(400).json({ success: false, message: msg });
+  }
+});
+
 // ─── TEST Zoho Zeptomail settings ───
 router.post('/test-zoho', async (req, res) => {
   try {
@@ -461,10 +490,14 @@ router.post('/test-zoho', async (req, res) => {
     const User = mongoose.model('User');
     const user = await User.findById(req.user.id);
 
-    // Test Zoho Zeptomail API
     try {
+      const apiUrl = zohoZeptomailApiUrl || 'https://api.zeptomail.com/';
+      const apiEndpoint = apiUrl.endsWith('/') 
+        ? `${apiUrl}v1.1/email`
+        : `${apiUrl}/v1.1/email`;
+      
       await axios.post(
-        `${zohoZeptomailApiUrl || 'https://api.zeptomail.com/'}api/v1.1/mail/send`,
+        apiEndpoint,
         {
           from: {
             address: zohoZeptomailFromEmail.trim(),
@@ -499,7 +532,7 @@ router.post('/test-zoho', async (req, res) => {
         },
         {
           headers: {
-            'Authorization': `Zoho-enauth ${actualApiKey}`,
+            'Authorization': getZohoAuthHeaderValue(actualApiKey),
             'Content-Type': 'application/json'
           },
           timeout: 30000

@@ -4,8 +4,8 @@ import { createPortal } from 'react-dom';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
 import { 
-  Plus, Search, Mail, MessageCircle,Upload, 
-  Filter, CheckSquare, Square, FileText, Cpu, Trash2, Edit, X, Briefcase,BarChart3, AlertCircle, RefreshCw, Download, Eye, Info, Share2
+  Plus, Search, Mail, MessageCircle, Upload, 
+  Filter, CheckSquare, Square, FileText, Cpu, Trash2, Edit, X, Briefcase, BarChart3, AlertCircle, RefreshCw, Download, Eye, Info, Share2, Megaphone
 } from 'lucide-react';
 import { useParsing } from '../hooks/useParsing';
 import PhoneInput from 'react-phone-input-2';
@@ -92,6 +92,10 @@ const ATS = forwardRef((props, ref) => {
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [templateVars, setTemplateVars] = useState({});
   const [emailMode, setEmailMode] = useState('template'); // 'template' or 'quick'
+  const [emailChannel, setEmailChannel] = useState('transactional'); // 'transactional' or 'marketing'
+  const [channelsAvailable, setChannelsAvailable] = useState({ transactional: true, marketing: false });
+  const [showVerifiedEmailRequiredModal, setShowVerifiedEmailRequiredModal] = useState(false);
+  const [verifiedEmailRequiredMessage, setVerifiedEmailRequiredMessage] = useState('');
   
   // Bulk Email Workflow States
   const [bulkEmailStep, setBulkEmailStep] = useState(null); // null, 'select', 'confirm', 'sending', 'results'
@@ -365,13 +369,17 @@ const ATS = forwardRef((props, ref) => {
       params.append('view', candidatesViewMode);
 
       console.log('📤 Fetching candidates from:', `${API_URL}?${params.toString()}`);
-      const res = await authenticatedFetch(`${API_URL}?${params.toString()}`, { cache: 'no-store' });
-      
+      // Run candidates and jobs in parallel so initial load is faster
+      const [res, jobRes] = await Promise.all([
+        authenticatedFetch(`${API_URL}?${params.toString()}`, { cache: 'no-store' }),
+        authenticatedFetch(`${JOBS_URL}?isTemplate=false`)
+      ]);
+
       if (isUnauthorized(res)) {
         handleUnauthorized();
         return;
       }
-      
+
       let response;
       try {
         response = await res.json();
@@ -381,12 +389,12 @@ const ATS = forwardRef((props, ref) => {
         setCandidates([]);
         return;
       }
-      
+
       console.log('🔍 HTTP Status:', res.status, 'OK:', res.ok);
       console.log('🔍 API Response - isSearch:', isSearch, 'limit:', limit, 'page:', page);
       console.log('🔍 API Response:', response);
       console.log('🔍 response.success:', response?.success, 'response.data type:', Array.isArray(response?.data) ? `array[${response.data.length}]` : typeof response?.data);
-      
+
       // Handle both paginated and raw array formats — only update list on success so failed "View all" doesn't wipe the list
       let candidatesData = [];
       let pages = 1;
@@ -445,14 +453,12 @@ const ATS = forwardRef((props, ref) => {
         setCurrentPage(page);
       }
 
+      // Process jobs (fetched in parallel above)
       try {
-        const jobRes = await authenticatedFetch(`${JOBS_URL}?isTemplate=false`);
-        
         if (isUnauthorized(jobRes)) {
           handleUnauthorized();
           return;
         }
-        
         const jobData = await jobRes.json();
         if (Array.isArray(jobData)) {
           setJobs(jobData);
@@ -461,7 +467,6 @@ const ATS = forwardRef((props, ref) => {
         }
       } catch (jobError) {
         console.warn('⚠️ Failed to load jobs:', jobError.message);
-        // Don't fail the entire load if jobs fail
       }
     } catch (error) {
       console.error("❌ Error fetching data:", error);
@@ -1318,7 +1323,31 @@ const handleDelete = (id) => {
       return;
     }
 
+    // Transactional (ZeptoMail): only verified-domain company emails can send
+    try {
+      const statusRes = await authenticatedFetch(`${BASE_API_URL}/api/email/sender-status`);
+      const statusData = await statusRes.json();
+      if (statusData.success && statusData.canSend === false) {
+        setVerifiedEmailRequiredMessage(statusData.reason || 'Please log in with your company verified email to send emails.');
+        setShowVerifiedEmailRequiredModal(true);
+        return;
+      }
+    } catch (_) { /* allow open if status fails */ }
+
+    // Fetch available channels
+    try {
+      const chRes = await authenticatedFetch(`${BASE_API_URL}/api/email/channels`);
+      const chData = await chRes.json();
+      if (chData.success && chData.channels) {
+        setChannelsAvailable({
+          transactional: chData.channels.transactional?.available ?? true,
+          marketing: false
+        });
+      }
+    } catch (_) { /* keep defaults */ }
+
     setEmailRecipient(candidate);
+    setEmailChannel('transactional');
     setEmailType('interview');
     setCustomMessage('');
     setEmailCC([]);
@@ -1384,6 +1413,7 @@ const handleDelete = (id) => {
         templateId: selectedTemplate._id,
         recipients: recipients,
         variables: templateVars,
+        channel: emailChannel,
       };
       if (emailCC.length > 0) body.cc = emailCC;
       if (emailBCC.length > 0) body.bcc = emailBCC;
@@ -1394,26 +1424,46 @@ const handleDelete = (id) => {
         body: JSON.stringify(body)
       });
       const data = await response.json();
+      const failedCount = data.data?.failed?.length ?? 0;
+      const successCount = data.data?.success?.length ?? 0;
       if (data.success) {
         if (bulkEmailRecipients.length > 0) {
-          toast.success(`Bulk email sent! Sent: ${data.data.success?.length || 0}, Failed: ${data.data.failed?.length || 0}`);
+          if (failedCount > 0) {
+            toast.error(`Bulk email: ${successCount} sent, ${failedCount} failed. ${data.data.failed?.[0]?.error || ''}`);
+            if (data.data?.failed?.length) console.error('[Send email] Failed:', data.data.failed);
+          } else {
+            toast.success(`Bulk email sent! Sent: ${successCount}`);
+          }
           setShowEmailModal(false);
           setBulkEmailRecipients([]);
           setSelectedIds([]);
         } else {
-          toast.success(`Email sent to ${emailRecipient.email}`);
-          setShowEmailModal(false);
-          setEmailRecipient(null);
+          if (failedCount > 0) {
+            const errMsg = data.data?.failed?.[0]?.error || 'Send failed';
+            toast.error(`Email not sent: ${errMsg}`);
+            console.error('[Send email] Failed:', data.data?.failed);
+          } else {
+            toast.success(`Email sent to ${emailRecipient.email}`);
+            setShowEmailModal(false);
+            setEmailRecipient(null);
+          }
         }
         setSelectedTemplate(null);
+        if (data.data && failedCount === 0) console.log('[Send email] Success:', data.data);
       } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+        console.error('[Send email] Not configured:', data);
         toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
         setShowEmailModal(false);
+      } else if (data.code === 'USE_VERIFIED_DOMAIN') {
+        setVerifiedEmailRequiredMessage(data.message || 'Please use your company verified email to send.');
+        setShowVerifiedEmailRequiredModal(true);
+        setShowEmailModal(false);
       } else {
+        console.error('[Send email] API error:', data.message, data);
         toast.error(`Failed: ${data.message}`);
       }
     } catch (err) {
-      console.error('Template email error:', err);
+      console.error('[Send email] Error:', err?.message, err);
       toast.error('Failed to send email');
     } finally {
       setIsSendingEmail(false);
@@ -1453,10 +1503,17 @@ const handleDelete = (id) => {
           setBulkEmailRecipients([]);
           setSelectedIds([]);
           setEmailRecipient(null);
+          console.log('[Send bulk email] Success:', data.data);
         } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+          console.error('[Send bulk email] Not configured:', data);
           toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
           setShowEmailModal(false);
+        } else if (data.code === 'USE_VERIFIED_DOMAIN') {
+          setVerifiedEmailRequiredMessage(data.message || 'Please use your company verified email to send.');
+          setShowVerifiedEmailRequiredModal(true);
+          setShowEmailModal(false);
         } else {
+          console.error('[Send bulk email] API error:', data.message, data);
           toast.error(`Failed to send bulk emails: ${data.message}`);
         }
       } else {
@@ -1492,15 +1549,22 @@ const handleDelete = (id) => {
           toast.success(successMessage);
           setShowEmailModal(false);
           setEmailRecipient(null);
+          console.log('[Send email] Success:', data);
         } else if (data.message === 'EMAIL_NOT_CONFIGURED') {
+          console.error('[Send email] Not configured:', data);
           toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
           setShowEmailModal(false);
+        } else if (data.code === 'USE_VERIFIED_DOMAIN') {
+          setVerifiedEmailRequiredMessage(data.message || 'Please use your company verified email to send.');
+          setShowVerifiedEmailRequiredModal(true);
+          setShowEmailModal(false);
         } else {
+          console.error('[Send email] API error:', data.message, data);
           toast.error(`Failed to send email: ${data.message}`);
         }
       }
     } catch (error) {
-      console.error('Email send error:', error);
+      console.error('[Send email] Error:', error?.message, error);
       toast.error('Failed to send email. Please try again.');
     } finally {
       setIsSendingEmail(false);
@@ -2495,239 +2559,150 @@ const handleAddCandidate = async (e) => {
         </div>
       )}
 
-      {/* Inline loading indicator — shown above the table, no modal */}
-      {isLoadingInitial && candidates.length === 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-indigo-500 border-t-transparent" />
-          <p className="text-sm font-semibold text-gray-600">Loading candidates...</p>
-          {/* Skeleton rows */}
-          <div className="mt-8 space-y-3 max-w-4xl mx-auto">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} className="flex items-center gap-4 animate-pulse">
-                <div className="w-8 h-4 bg-gray-200 rounded" />
-                <div className="flex-1 h-4 bg-gray-200 rounded" />
-                <div className="w-32 h-4 bg-gray-200 rounded" />
-                <div className="w-24 h-4 bg-gray-200 rounded" />
-                <div className="w-20 h-4 bg-gray-200 rounded" />
-                <div className="w-16 h-4 bg-gray-100 rounded" />
+      {showVerifiedEmailRequiredModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 bg-amber-50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                  <Mail className="text-amber-600" size={20} />
+                </div>
+                <h3 className="text-base font-bold text-gray-900">Use company email to send</h3>
               </div>
-            ))}
+            </div>
+            <div className="px-6 py-5">
+              <p className="text-sm text-gray-600 leading-relaxed">
+                {verifiedEmailRequiredMessage}
+              </p>
+              <p className="mt-3 text-xs text-gray-500">
+                Emails can only be sent from verified company addresses (e.g. yourname@yourcompany.com). Log in with that account to send emails to candidates.
+              </p>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => { setShowVerifiedEmailRequiredModal(false); setVerifiedEmailRequiredMessage(''); }}
+                className="px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+              >
+                OK
+              </button>
+            </div>
           </div>
         </div>
       )}
-      
-      {/* HEADER SECTION */}
-      <div className="mb-6">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-gray-200">
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
-                All Candidates
-              </h1>
-              {/* Show only mine / View all — professional segmented control */}
-              <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-1 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => setCandidatesViewMode('mine')}
-                  className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${candidatesViewMode === 'mine' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}`}
-                >
-                  Show only mine
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCandidatesViewMode('all')}
-                  className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${candidatesViewMode === 'all' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}`}
-                >
-                  View all
-                </button>
-              </div>
-            </div>
-            <p className="text-gray-500 text-xs mt-0.5">
-              {filteredCandidates.length.toLocaleString()} records
-              {searchQuery && <span> matching &ldquo;{searchQuery}&rdquo;</span>}
-            </p>
-            {candidatesViewMode === 'all' && (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={handleImportAllToMineClick}
-                  disabled={isImportingShared || isImportingAll}
-                  className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
-                  title="Copy every candidate in the database into your list (skips ones you already own)"
-                >
-                  {isImportingAll ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
-                  {isImportingAll ? 'Importing...' : 'Import all from database'}
-                </button>
-                {filteredCandidates.some(c => c._isShared) && (
-                  <button
-                    onClick={handleImportSharedToMineClick}
-                    disabled={isImportingShared || isImportingAll}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
-                    title="Import only candidates that were shared with you by a team member"
-                  >
-                    {isImportingShared ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
-                    {isImportingShared ? 'Importing...' : (selectedIds.length > 0 ? `Import ${selectedIds.length} shared` : 'Import shared to my candidates')}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-          
-          <div className="flex gap-3 items-center">
-          {/* Hidden File Input for Manual CSV Upload */}
-          <input 
-            type="file" 
-            accept=".csv, .xlsx, .xls" 
-            ref={fileInputRef} 
-            onChange={handleBulkUpload} 
-            className="hidden" 
-          />
-          
-          {/* Hidden File Input for AUTO Upload */}
-          <input 
-            type="file" 
-            accept=".csv, .xlsx, .xls" 
-            ref={autoUploadInputRef} 
-            onChange={handleAutoUpload} 
-            className="hidden" 
-          />
 
+      {/* Loading bar only — thin top bar when initial load, no skeleton */}
+      {isLoadingInitial && candidates.length === 0 && (
+        <div className="h-1 w-full bg-gray-100 rounded overflow-hidden mb-5">
+          <div className="h-full w-1/3 bg-indigo-500 rounded animate-shimmer" />
         </div>
-      </div>
+      )}
+      
+      {/* Hidden file inputs (no UI) */}
+      <input type="file" accept=".csv, .xlsx, .xls" ref={fileInputRef} onChange={handleBulkUpload} className="hidden" />
+      <input type="file" accept=".csv, .xlsx, .xls" ref={autoUploadInputRef} onChange={handleAutoUpload} className="hidden" />
 
-          {/* COMMENTED OUT BULK ACTIONS - ONLY SHOW IF CANDIDATES SELECTED */}
-          {selectedIds.length > 0 && (
-            <>
-              {/* BULK EMAIL BUTTON */}
-              {/* <button onClick={startBulkEmailFlow} className="flex items-center gap-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg font-bold hover:bg-indigo-200 transition shadow-sm border border-indigo-200">
-                <Mail size={18} /> Email Selected ({selectedIds.length})
-              </button>
-
-              BULK WHATSAPP BUTTON 
-              <button onClick={handleBulkWhatsApp} className="flex items-center gap-2 px-4 py-2 bg-green-100 text-green-700 rounded-lg font-bold hover:bg-green-200 transition shadow-sm border border-green-200">
-                <MessageCircle size={18} /> WhatsApp Selected ({selectedIds.length})
-              </button>
-
-              <button onClick={handleBulkParse} disabled={isParsing} className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition shadow-sm ${isParsing ? 'bg-indigo-200 text-white' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}>
-                <Cpu size={18} className={isParsing ? 'animate-spin' : ''} /> 
-                {isParsing ? 'Parsing...' : `Parse (${selectedIds.length})`}
-              </button> */}
-            </>
-          )}
-
-          {/* COMMENTED OUT EXTRA BUTTONS
-          <button 
-            onClick={() => navigate('/analytics')} 
-            className="flex items-center gap-2 px-4 py-2 bg-purple-100 text-purple-700 rounded-lg font-bold hover:bg-purple-200 transition shadow-sm border border-purple-200"
-          >
-            <BarChart3 size={18} /> View Reports
-          </button>
-
-          AUTO IMPORT BUTTON 
-          <button 
-            onClick={() => autoUploadInputRef.current.click()} 
-            disabled={isUploading}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-indigo-700 shadow-lg transition disabled:opacity-60"
-          >
-            <Upload size={20} /> {isUploading ? 'Uploading...' : '⚡ Auto Import'}
-          </button>
-
-          <button onClick={() => navigate('/add-candidate')} className="flex items-center gap-2 bg-gray-900 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-gray-800 shadow-lg transition">
-            <Plus size={20} /> Add Candidate
-          </button>
-
-          <button 
-            onClick={async () => {
-              if (!window.confirm('⚠️ WARNING: This will DELETE ALL candidates!\n\nThis action CANNOT be undone.\n\nAre you absolutely sure?')) return;
-              try {
-                const res = await authenticatedFetch(`${BASE_API_URL}/candidates/clear-all/now`, {
-                  method: 'DELETE',
-                  headers: { 'Content-Type': 'application/json' }
-                });
-                if (!res.ok) throw new Error('Failed to clear database');
-                const data = await res.json();
-                toast.success(`Deleted ${data.deletedCount} records. Database is now empty.`);
-                setCandidates([]);
-                setCurrentPage(1);
-                setSearchQuery('');
-                setFilterJob('');
-              } catch (err) {
-                toast.error(err.message);
-              }
-            }}
-            className="flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-red-700 shadow-lg transition"
-          >
-            <Trash2 size={20} /> Clear All Data
-          </button>
-          */}
-      </div>
-
-      {/* SEARCH & FILTERS BAR */}
-      <div className="mb-6">
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center gap-3 focus-within:ring-2 ring-indigo-500/20 transition-all flex-wrap">
-          <Search className="text-gray-400 flex-shrink-0" size={20} />
-          <select
-            value={searchScope}
-            onChange={(e) => setSearchScope(e.target.value)}
-            className="px-3 py-2 rounded-lg text-sm border border-gray-200 bg-gray-50 text-gray-700 font-medium outline-none focus:ring-2 focus:ring-indigo-500/20"
-            title="Search in this field only"
-          >
-            <option value="all">All fields</option>
-            <option value="spoc">SPOC only</option>
-            <option value="name">Name only</option>
-            <option value="email">Email only</option>
-            <option value="position">Position only</option>
-            <option value="location">Location only</option>
-            <option value="company">Company only</option>
-            <option value="client">Client only</option>
-          </select>
-          <input
-            type="text"
-            placeholder={searchScope === 'all' ? 'Search by name, email, position, location, client or SPOC...' : `Search in ${searchScope}...`}
-            className="flex-1 min-w-[200px] outline-none text-gray-700 bg-transparent"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-          {(searchScope !== 'all' || searchQuery.trim()) && (
+      {/* HEADER + TOOLBAR — single card, enterprise layout */}
+      <div className="mb-5 rounded-xl border border-gray-200/80 bg-white shadow shadow-gray-200/50 overflow-hidden">
+        {/* Row 1: Title, view toggle, count, import actions */}
+        <div className="flex flex-wrap items-center gap-4 px-5 py-4 border-b border-gray-100">
+          <h1 className="text-xl font-semibold text-gray-900 tracking-tight">All Candidates</h1>
+          <div className="inline-flex rounded-lg bg-gray-100 p-1 border border-gray-200/80">
             <button
               type="button"
-              onClick={() => { setSearchScope('all'); setSearchQuery(''); setCurrentPage(1); }}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 border border-gray-200 transition-colors"
-              title="Clear search and field filter"
+              onClick={() => setCandidatesViewMode('mine')}
+              className={`px-3.5 py-2 text-sm font-medium rounded-md transition-all duration-150 ${candidatesViewMode === 'mine' ? 'bg-white text-gray-900 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
             >
-              <X size={16} /> Clear filter
+              Show only mine
             </button>
+            <button
+              type="button"
+              onClick={() => setCandidatesViewMode('all')}
+              className={`px-3.5 py-2 text-sm font-medium rounded-md transition-all duration-150 ${candidatesViewMode === 'all' ? 'bg-white text-gray-900 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              View all
+            </button>
+          </div>
+          <span className="text-sm font-medium text-gray-600 tabular-nums">
+            {filteredCandidates.length.toLocaleString()} records
+            {searchQuery && <span className="font-normal text-gray-500"> · &ldquo;{searchQuery}&rdquo;</span>}
+          </span>
+          {candidatesViewMode === 'all' && (
+            <div className="flex items-center gap-2 ml-auto">
+              <button
+                onClick={handleImportAllToMineClick}
+                disabled={isImportingShared || isImportingAll}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium shadow-sm hover:bg-indigo-700 hover:shadow disabled:opacity-50 transition-all duration-150"
+                title="Copy every candidate in the database into your list"
+              >
+                {isImportingAll ? <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
+                {isImportingAll ? 'Importing...' : 'Import all from database'}
+              </button>
+              {filteredCandidates.some(c => c._isShared) && (
+                <button
+                  onClick={handleImportSharedToMineClick}
+                  disabled={isImportingShared || isImportingAll}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium shadow-sm hover:bg-emerald-700 hover:shadow disabled:opacity-50 transition-all duration-150"
+                  title="Import only candidates shared with you"
+                >
+                  {isImportingShared ? <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Plus size={14} />}
+                  {isImportingShared ? 'Importing...' : (selectedIds.length > 0 ? `Import ${selectedIds.length} shared` : 'Import shared')}
+                </button>
+              )}
+            </div>
           )}
         </div>
 
-        {/* ADVANCED SEARCH BUTTON & DOWNLOAD BUTTON */}
-        <div className="mt-3 flex justify-start gap-3">
-          <button 
-            onClick={() => setShowAdvancedSearch(!showAdvancedSearch)} 
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition border ${ 
-              showAdvancedSearch 
-                ? 'bg-indigo-600 text-white border-indigo-700' 
-                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-            }`}
+        {/* Row 2: Search + Filters + Export + Sort — one toolbar */}
+        <div className="flex flex-wrap items-center gap-3 px-5 py-3 bg-gray-50/80 border-t border-gray-100">
+          <div className="flex items-center gap-2 flex-1 min-w-[280px] max-w-xl bg-white rounded-lg border border-gray-200 px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-indigo-500/25 focus-within:border-indigo-400 transition-all">
+            <Search className="text-gray-400 flex-shrink-0" size={18} />
+            <select
+              value={searchScope}
+              onChange={(e) => setSearchScope(e.target.value)}
+              className="text-sm border-0 bg-transparent text-gray-600 font-medium outline-none cursor-pointer py-0"
+              title="Search in"
+            >
+              <option value="all">All fields</option>
+              <option value="spoc">SPOC</option>
+              <option value="name">Name</option>
+              <option value="email">Email</option>
+              <option value="position">Position</option>
+              <option value="location">Location</option>
+              <option value="company">Company</option>
+              <option value="client">Client</option>
+            </select>
+            <input
+              type="text"
+              placeholder={searchScope === 'all' ? 'Search candidates...' : `Search ${searchScope}...`}
+              className="flex-1 min-w-0 text-sm outline-none text-gray-800 placeholder-gray-400 bg-transparent"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {(searchScope !== 'all' || searchQuery.trim()) && (
+              <button type="button" onClick={() => { setSearchScope('all'); setSearchQuery(''); setCurrentPage(1); }} className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors" title="Clear">
+                <X size={16} />
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium border transition-all duration-150 ${showAdvancedSearch ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 hover:border-gray-300 shadow-sm'}`}
           >
-            <Filter size={16} /> {showAdvancedSearch ? 'Close Filters' : 'Advanced Search'}
+            <Filter size={16} /> {showAdvancedSearch ? 'Close' : 'Filters'}
           </button>
-          <button 
-            onClick={() => {
-              if (filteredCandidates.length === 0) { toast.warning('No candidates to download.'); return; }
-              setShowDownloadModal(true);
-            }}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition border bg-green-600 text-white border-green-700 hover:bg-green-700"
+          <button
+            onClick={() => { if (filteredCandidates.length === 0) toast.warning('No candidates to download.'); else setShowDownloadModal(true); }}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all duration-150"
           >
-            <Download size={16} /> Download Excel {selectedIds.length > 0 ? `(${selectedIds.length})` : ''}
+            <Download size={16} /> Export{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
           </button>
-
-          {/* Sort Controls */}
-          <div className="flex items-center gap-2 ml-auto">
-            <span className="text-xs text-gray-500 font-medium">Sort by:</span>
+          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 py-1.5 shadow-sm">
+            <span className="text-sm text-gray-500 font-medium">Sort</span>
             <select
               value={sortField}
               onChange={(e) => { setSortField(e.target.value); setCurrentPage(1); }}
-              className="px-3 py-2 rounded-lg text-sm border border-gray-300 bg-white text-gray-700 font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+              className="text-sm py-1 pr-6 border-0 bg-transparent text-gray-700 font-medium outline-none cursor-pointer focus:ring-0"
             >
               <option value="date">Date Added</option>
               <option value="name">Name</option>
@@ -2740,13 +2715,12 @@ const handleAddCandidate = async (e) => {
             </select>
             <button
               onClick={() => { setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); setCurrentPage(1); }}
-              className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-semibold transition border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-              title={sortOrder === 'asc' ? 'Ascending (A→Z, Old→New)' : 'Descending (Z→A, New→Old)'}
+              className="p-1.5 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+              title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
             >
-              {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+              {sortOrder === 'asc' ? '↑' : '↓'}
             </button>
           </div>
-
         </div>
       </div>
 
@@ -3403,6 +3377,29 @@ const handleAddCandidate = async (e) => {
 
             <div className="overflow-y-auto flex-1 px-6 py-4">
               <div className="space-y-4">
+
+                {/* Channel Selector */}
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1 p-1 bg-gray-100 rounded-lg">
+                    <button
+                      onClick={() => setEmailChannel('transactional')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 ${emailChannel === 'transactional' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      <Mail size={12} /> Transactional
+                    </button>
+                    <button
+                      onClick={() => setEmailChannel('marketing')}
+                      disabled={!channelsAvailable.marketing}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 ${emailChannel === 'marketing' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'} ${!channelsAvailable.marketing ? 'opacity-40 cursor-not-allowed' : ''}`}
+                      title={!channelsAvailable.marketing ? 'Zoho Campaigns not configured' : 'Send via Zoho Campaigns (marketing)'}
+                    >
+                      <Megaphone size={12} /> Marketing
+                    </button>
+                  </div>
+                  <span className="text-[10px] text-gray-400">
+                    via {emailChannel === 'marketing' ? 'Zoho Campaigns' : 'ZeptoMail'}
+                  </span>
+                </div>
 
                 {/* Mode Toggle */}
                 <div className="flex gap-2 p-1 bg-gray-100 rounded-lg w-fit">
