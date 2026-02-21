@@ -646,11 +646,34 @@ const getVerifiedZeptoDomain = () => {
   return from.split('@')[1].toLowerCase();
 };
 
+/**
+ * Get verified sender domain and API key: from env first, then CompanyEmailConfig (so deploy works without env vars).
+ */
+const getVerifiedZeptoConfig = async () => {
+  let fromEmail = (process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL || '').trim();
+  let apiKey = (process.env.ZOHO_ZEPTOMAIL_API_KEY || '').trim();
+  if (fromEmail && fromEmail.includes('@') && apiKey) {
+    return { fromEmail, apiKey, domain: fromEmail.split('@')[1].toLowerCase(), source: 'env' };
+  }
+  try {
+    const CompanyEmailConfig = mongoose.model('CompanyEmailConfig');
+    const companyConfig = await CompanyEmailConfig.findOne({ companyId: 'default-company' });
+    if (companyConfig?.isConfigured && companyConfig.primaryProvider === 'zoho-zeptomail') {
+      fromEmail = (companyConfig.zohoZeptomailFromEmail || '').trim();
+      apiKey = (companyConfig.zohoZeptomailApiKey || '').trim();
+      if (fromEmail && fromEmail.includes('@') && apiKey) {
+        return { fromEmail, apiKey, domain: fromEmail.split('@')[1].toLowerCase(), source: 'company' };
+      }
+    }
+  } catch (_) { /* ignore */ }
+  return { fromEmail: '', apiKey: '', domain: '', source: '' };
+};
+
 const canUserSendViaZepto = async (userId) => {
   if (!userId) return { canSend: false, reason: 'Not logged in', verifiedDomain: '' };
-  const verifiedDomain = getVerifiedZeptoDomain();
+  const { domain: verifiedDomain, apiKey } = await getVerifiedZeptoConfig();
   if (!verifiedDomain) return { canSend: false, reason: 'No verified sender configured', verifiedDomain: '' };
-  if (!(process.env.ZOHO_ZEPTOMAIL_API_KEY || '').trim()) return { canSend: false, reason: 'ZeptoMail not configured', verifiedDomain };
+  if (!apiKey) return { canSend: false, reason: 'ZeptoMail not configured', verifiedDomain };
   try {
     const User = mongoose.model('User');
     const user = await User.findById(userId).select('email');
