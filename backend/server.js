@@ -1,6 +1,27 @@
 
 
-require('dotenv').config();
+
+
+
+
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+// Log Zoho Campaigns .env status at startup (so you can confirm vars are loaded)
+(function () {
+  const c = process.env.ZOHO_CAMPAIGNS_CLIENT_ID;
+  const s = process.env.ZOHO_CAMPAIGNS_CLIENT_SECRET;
+  const r = process.env.ZOHO_CAMPAIGNS_REFRESH_TOKEN;
+  const l = process.env.ZOHO_CAMPAIGNS_LIST_KEY;
+  const ok = (v) => (v && typeof v === 'string' && v.trim().length > 0);
+  if (ok(c) && ok(s) && ok(r) && ok(l)) {
+    const keyPreview = l.length >= 8 ? l.substring(0, 8) + '...' : '(set)';
+    console.log('[Campaigns] .env: ZOHO_CAMPAIGNS_* and LIST_KEY are set. LIST_KEY starts with:', keyPreview, '— ensure this is the List Key from "Skillnix Job alerts" in Zoho (not My Sample List).');
+  } else {
+    const missing = [].concat(!ok(c) ? ['ZOHO_CAMPAIGNS_CLIENT_ID'] : [], !ok(s) ? ['ZOHO_CAMPAIGNS_CLIENT_SECRET'] : [], !ok(r) ? ['ZOHO_CAMPAIGNS_REFRESH_TOKEN'] : [], !ok(l) ? ['ZOHO_CAMPAIGNS_LIST_KEY'] : []);
+    console.warn('[Campaigns] .env missing or empty:', missing.join(', '), '— marketing emails will fail until set and backend is restarted.');
+  }
+})();
 
 // Global crash handlers - prevent server from dying on unhandled errors
 process.on('uncaughtException', (err) => {
@@ -13,7 +34,6 @@ process.on('unhandledRejection', (reason) => {
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 const homeRoutes = require('./routes/home');
@@ -30,6 +50,8 @@ const emailSettingsRoutes = require('./routes/emailSettingsRoutes');
 const companyEmailSettingsRoutes = require('./routes/companyEmailSettingsRoutes');  // ✅ Company-wide email config
 const notificationRoutes = require('./routes/notificationRoutes');
 const teamRoutes = require('./routes/teamRoutes');
+const publicSubscribeRoutes = require('./routes/publicSubscribeRoutes');
+const zohoOAuthRoutes = require('./routes/zohoOAuthRoutes');
 const { startNotificationScheduler } = require('./services/notificationService');
 const { verifyToken, generateToken, JWT_SECRET } = require('./middleware/authMiddleware');
 const { normalizeText } = require('./utils/textNormalize');
@@ -86,6 +108,8 @@ app.use('/api/email-settings', verifyToken, emailSettingsRoutes);  // Protected 
 app.use('/api/company-email-settings', verifyToken, companyEmailSettingsRoutes);  // Protected - company-wide email settings (ENTERPRISE)
 app.use('/api/notifications', verifyToken, notificationRoutes);  // Protected
 app.use('/api/team', teamRoutes);  // Protected (verifyToken inside router)
+app.use('/api/public', publicSubscribeRoutes);  // Public – no auth (subscribe for marketing list)
+app.use('/oauth/zoho', zohoOAuthRoutes);        // Zoho Campaigns OAuth callback (get refresh_token)
 
 // Static Folder for Uploads - always use backend/uploads (same as candidateRoutes resume + multer)
 const uploadDir = path.join(__dirname, 'uploads');
@@ -777,6 +801,10 @@ app.post('/jobs', verifyToken, async (req, res) => {
 
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  const s3Resume = require('./services/s3Service').isS3Configured();
+  console.log(s3Resume
+    ? `[Resume storage] S3 — bucket: ${process.env.S3_BUCKET_NAME}, folder: ${process.env.S3_RESUME_PREFIX || 'resumes'}`
+    : '[Resume storage] Local (uploads/) — set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME to use S3');
   // Start the callback reminder notification scheduler
   startNotificationScheduler();
 });

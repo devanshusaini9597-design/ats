@@ -23,12 +23,20 @@ import ProfileSettingsPage from './components/ProfileSettingsPage';
 import TeamPage from './components/TeamPage';
 import ResetPasswordPage from './components/ResetPasswordPage';
 import Jobs from './pages/Jobs';
+import SubscribePage from './components/SubscribePage';
+import SubscribeThankYouPage from './components/SubscribeThankYouPage';
+import UnsubscribePage from './components/UnsubscribePage';
+import UnsubscribeThankYouPage from './components/UnsubscribeThankYouPage';
 
 const router = createBrowserRouter([
   { path: '/', element: <Home /> },
   { path: '/login', element: <Login /> },
   { path: '/register', element: <Register /> },
   { path: '/reset-password', element: <ResetPasswordPage /> },
+  { path: '/subscribe', element: <SubscribePage /> },
+  { path: '/subscribe/thank-you', element: <SubscribeThankYouPage /> },
+  { path: '/unsubscribe', element: <UnsubscribePage /> },
+  { path: '/unsubscribe/thank-you', element: <UnsubscribeThankYouPage /> },
   { path: '/dashboard', element: <ProtectedRoute><DashboardPage /></ProtectedRoute> },
   { path: '/ats', element: <ProtectedRoute><ATSPage /></ProtectedRoute> },
   { path: '/add-candidate', element: <ProtectedRoute><AddCandidatePage /></ProtectedRoute> },

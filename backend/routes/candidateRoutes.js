@@ -620,9 +620,29 @@ router.get('/:id/resume', async (req, res) => {
         if (!candidate || !candidate.resume) {
             return res.status(404).json({ message: 'Resume not found' });
         }
-        const rawPath = String(candidate.resume).replace(/^\/+/, '').trim();
+        const resumeValue = String(candidate.resume).trim();
+        const s3Service = require('../services/s3Service');
+
+        // Serve from S3 if resume is stored in S3 (key like "resumes/xxx.pdf")
+        if (s3Service.isS3Resume(resumeValue)) {
+            const s3Key = resumeValue.replace(/^\/+/, '');
+            const result = await s3Service.getResumeStream(s3Key);
+            if (result && result.stream) {
+                const isDownload = req.query.download === '1';
+                const filename = path.basename(s3Key);
+                const disposition = isDownload ? `attachment; filename="${filename}"` : 'inline';
+                res.setHeader('Content-Disposition', disposition);
+                res.setHeader('Content-Type', result.contentType || 'application/octet-stream');
+                result.stream.pipe(res);
+                return;
+            }
+            console.error('[Resume] S3 get failed for key:', s3Key);
+            return res.status(404).json({ message: 'Resume file not found in S3. Try re-uploading.' });
+        }
+
+        // Local file: try uploads directory
+        const rawPath = resumeValue.replace(/^\/+/, '').trim();
         const filename = path.basename(rawPath);
-        // Try all possible locations: backend/uploads, path from DB, cwd/uploads, project-root/uploads
         const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
         const tries = [
             path.join(UPLOADS_DIR, filename),
@@ -631,7 +651,7 @@ router.get('/:id/resume', async (req, res) => {
             path.join(process.cwd(), '..', 'uploads', filename),
             path.join(__dirname, '..', 'uploads', filename)
         ].filter(Boolean);
-        
+
         let filePath = null;
         for (const p of tries) {
             if (fs.existsSync(p)) {
@@ -639,7 +659,7 @@ router.get('/:id/resume', async (req, res) => {
                 break;
             }
         }
-        
+
         if (!filePath) {
             console.error('[Resume] File not found on server:', {
                 candidateId: req.params.id,
@@ -652,11 +672,11 @@ router.get('/:id/resume', async (req, res) => {
             });
             return res.status(404).json({ message: 'Resume file not found on this server. Try re-uploading the resume.' });
         }
-        
+
         const ext = path.extname(filePath).toLowerCase();
         const disposition = req.query.download === '1' ? 'attachment' : 'inline';
         res.setHeader('Content-Disposition', disposition);
-        
+
         if (['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.doc', '.docx'].includes(ext)) {
             const mime = {
                 '.pdf': 'application/pdf',

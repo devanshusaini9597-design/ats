@@ -2,9 +2,9 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 
 /**
- * Zoho Campaigns — OAuth2 (client_id, client_secret, refresh_token)
- * India: accounts.zoho.in, api_domain www.zohoapis.in
- * Base URL: https://www.zohoapis.in/campaigns/v1.1
+ * Zoho Campaigns — OAuth2 (client_id, client_secret, refresh_token) or API key (Zoho-zapikey)
+ * India: accounts.zoho.in, Campaigns API base: https://campaigns.zoho.in/api/v1.1
+ * (Not www.zohoapis.in — Campaigns uses campaigns.zoho.in / campaigns.zoho.com)
  */
 
 const TOKEN_URL = process.env.ZOHO_CAMPAIGNS_ACCOUNTS_URL || 'https://accounts.zoho.in/oauth/v2/token';
@@ -12,8 +12,9 @@ const TOKEN_URL = process.env.ZOHO_CAMPAIGNS_ACCOUNTS_URL || 'https://accounts.z
 const getClientId = () => (process.env.ZOHO_CAMPAIGNS_CLIENT_ID || '').trim();
 const getClientSecret = () => (process.env.ZOHO_CAMPAIGNS_CLIENT_SECRET || '').trim();
 const getRefreshToken = () => (process.env.ZOHO_CAMPAIGNS_REFRESH_TOKEN || '').trim();
+const getApiKey = () => (process.env.ZOHO_CAMPAIGNS_API_KEY || '').trim();
 const getBaseUrl = () => {
-  const url = (process.env.ZOHO_CAMPAIGNS_BASE_URL || 'https://www.zohoapis.in/campaigns/v1.1').trim();
+  const url = (process.env.ZOHO_CAMPAIGNS_BASE_URL || 'https://campaigns.zoho.in/api/v1.1').trim();
   return url.endsWith('/') ? url : url + '/';
 };
 const getFromEmail = () => (process.env.ZOHO_CAMPAIGNS_FROM_EMAIL || process.env.ZOHO_ZEPTOMAIL_FROM_EMAIL || '').trim();
@@ -51,20 +52,37 @@ const getAccessToken = async () => {
   return cachedAccessToken;
 };
 
-const isCampaignsConfigured = () => !!(getClientId() && getClientSecret() && getRefreshToken());
+const isCampaignsConfigured = () => {
+  const hasOAuth = !!(getClientId() && getClientSecret() && getRefreshToken());
+  const hasApiKey = !!getApiKey();
+  return hasOAuth || hasApiKey;
+};
 
 const campaignsRequest = async (method, path, bodyOrParams = null) => {
-  const token = await getAccessToken();
   const baseUrl = getBaseUrl();
-  const url = path.startsWith('http') ? path : `${baseUrl.replace(/\/?$/, '')}/${path.replace(/^\//, '')}`;
+  let url = path.startsWith('http') ? path : `${baseUrl.replace(/\/?$/, '')}/${path.replace(/^\//, '')}`;
+  let authHeader;
+  const apiKey = getApiKey();
+  if (apiKey) {
+    authHeader = apiKey.toLowerCase().startsWith('zoho-zapikey') ? apiKey : `Zoho-zapikey ${apiKey}`;
+  } else {
+    const token = await getAccessToken();
+    authHeader = `Zoho-oauthtoken ${token}`;
+  }
   const config = {
     headers: {
-      'Authorization': `Zoho-oauthtoken ${token}`,
+      'Authorization': authHeader,
       'Content-Type': 'application/x-www-form-urlencoded'
     },
     timeout: 30000
   };
-  if (bodyOrParams && method === 'POST') config.data = typeof bodyOrParams === 'string' ? bodyOrParams : new URLSearchParams(bodyOrParams).toString();
+  // Zoho Campaigns listsubscribe/listunsubscribe expect params in URL query string (see contact-subscribe docs)
+  if (bodyOrParams && method === 'POST') {
+    const queryString = typeof bodyOrParams === 'string' ? bodyOrParams : new URLSearchParams(bodyOrParams).toString();
+    const sep = url.includes('?') ? '&' : '?';
+    url = `${url}${sep}${queryString}`;
+    config.data = queryString;
+  }
   if (bodyOrParams && method === 'GET') config.params = bodyOrParams;
   const res = await axios({ method, url, ...config });
   return res.data;
@@ -85,6 +103,22 @@ const addContact = async (listKey, email, firstName = '', lastName = '') => {
     listkey: listKey,
     contactinfo: contactinfo,
     source: 'Skillnix ATS'
+  }).toString());
+  return res;
+};
+
+/**
+ * Unsubscribe contact from a list (scope: ZohoCampaigns.contact.UPDATE)
+ * Path: json/listunsubscribe
+ */
+const removeContact = async (listKey, email) => {
+  const contactinfo = JSON.stringify({
+    'Contact Email': email
+  });
+  const res = await campaignsRequest('POST', 'json/listunsubscribe', new URLSearchParams({
+    resfmt: 'JSON',
+    listkey: listKey,
+    contactinfo: contactinfo
   }).toString());
   return res;
 };
@@ -119,6 +153,7 @@ const sendMarketingEmail = async (to, subject, htmlBody, options = {}) => {
   if (!listKey) {
     const err = new Error('Zoho Campaigns: Set ZOHO_CAMPAIGNS_LIST_KEY in .env (get list key from Zoho Campaigns > Mailing Lists > list key).');
     err.code = 'CAMPAIGNS_NOT_CONFIGURED';
+    err.displayMessage = 'Add ZOHO_CAMPAIGNS_LIST_KEY in backend .env. Get the list key from Zoho Campaigns → Mailing Lists → your list → list key.';
     throw err;
   }
 
@@ -152,6 +187,7 @@ module.exports = {
   getAccessToken,
   campaignsRequest,
   addContact,
+  removeContact,
   sendMarketingEmail,
   isCampaignsConfigured,
   getFromEmail

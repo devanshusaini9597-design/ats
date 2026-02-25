@@ -1,16 +1,102 @@
 const express = require('express');
 const router = express.Router();
 const EmailTemplate = require('../models/EmailTemplate');
+const { signEmail } = require('../utils/subscribeSign');
 
 // ─── GET all templates for the logged-in user (includes defaults) ───
 router.get('/', async (req, res) => {
   try {
-    const templates = await EmailTemplate.find({
+    const SUBSCRIBE_TEMPLATE = {
+      name: 'Subscribe for Updates',
+      category: 'marketing',
+      subject: 'Stay ahead with {{company}} – Job alerts and updates',
+      body: `Dear {{candidateName}},
+
+Thank you for your interest in {{company}}. We would like to keep you informed with relevant opportunities and updates.
+
+What you'll receive when you subscribe:
+
+• Curated job alerts matched to your skills and preferences
+• Early notice of hiring drives and new openings from our partner companies
+• Occasional industry insights and career tips from our HR team
+
+Click the button below to subscribe. You will then be added to our mailing list and will receive future updates via email.
+
+Subscribe now: {{subscribeLink}}
+
+Best regards,
+Skillnix Recruitment Services`,
+      variables: ['candidateName', 'company', 'subscribeLink'],
+      isDefault: true,
+      createdBy: req.user.id
+    };
+
+    let templates = await EmailTemplate.find({
       $or: [{ createdBy: req.user.id }, { isDefault: true }]
     }).sort({ isDefault: -1, updatedAt: -1 });
+
+    const hasSubscribe = templates.some(t => t.name === 'Subscribe for Updates' && t.category === 'marketing');
+    if (!hasSubscribe) {
+      const created = await EmailTemplate.create(SUBSCRIBE_TEMPLATE);
+      templates = [created, ...templates];
+    } else {
+      const existingSubscribe = templates.find(t => t.name === 'Subscribe for Updates' && t.category === 'marketing');
+      if (existingSubscribe && existingSubscribe.body && existingSubscribe.body.includes('unsubscribe')) {
+        existingSubscribe.body = SUBSCRIBE_TEMPLATE.body;
+        existingSubscribe.subject = SUBSCRIBE_TEMPLATE.subject;
+        existingSubscribe.variables = SUBSCRIBE_TEMPLATE.variables;
+        await existingSubscribe.save();
+      }
+    }
+    // Show premade "Subscribe for Updates" first, then other defaults, then by updatedAt
+    templates.sort((a, b) => {
+      const aFirst = (a.name === 'Subscribe for Updates' && a.category === 'marketing') ? 1 : 0;
+      const bFirst = (b.name === 'Subscribe for Updates' && b.category === 'marketing') ? 1 : 0;
+      if (bFirst !== aFirst) return bFirst - aFirst;
+      return (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0) || (new Date(b.updatedAt) - new Date(a.updatedAt));
+    });
+
     res.json({ success: true, templates });
   } catch (err) {
     console.error('Get templates error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── Ensure "Subscribe for Updates" premade template exists (call to add it if missing) ───
+router.post('/ensure-subscribe', async (req, res) => {
+  try {
+    const existing = await EmailTemplate.findOne({ name: 'Subscribe for Updates', category: 'marketing' });
+    if (existing) {
+      return res.json({ success: true, template: existing, added: false });
+    }
+    const template = await EmailTemplate.create({
+      name: 'Subscribe for Updates',
+      category: 'marketing',
+      subject: 'Stay ahead with {{company}} – Job alerts and updates',
+      body: `Dear {{candidateName}},
+
+Thank you for your interest in {{company}}. We would like to keep you informed with relevant opportunities and updates.
+
+What you'll receive when you subscribe:
+
+• Curated job alerts matched to your skills and preferences
+• Early notice of hiring drives and new openings from our partner companies
+• Occasional industry insights and career tips from our HR team
+
+Click the button below to subscribe. You will then be added to our mailing list and will receive future updates via email.
+
+Subscribe now: {{subscribeLink}}
+
+Best regards,
+Skillnix Recruitment Services`,
+      variables: ['candidateName', 'company', 'subscribeLink'],
+      isDefault: true,
+      createdBy: req.user.id
+    });
+    res.json({ success: true, template, added: true });
+  } catch (err) {
+    console.error('Ensure subscribe template error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -104,6 +190,14 @@ router.post('/send', async (req, res) => {
       if (!isCampaignsConfigured()) {
         return res.status(400).json({ success: false, message: 'CAMPAIGNS_NOT_CONFIGURED', displayMessage: 'Zoho Campaigns is not configured.' });
       }
+      const listKey = (process.env.ZOHO_CAMPAIGNS_LIST_KEY || '').trim();
+      if (!listKey) {
+        return res.status(400).json({
+          success: false,
+          message: 'CAMPAIGNS_NOT_CONFIGURED',
+          displayMessage: 'Add ZOHO_CAMPAIGNS_LIST_KEY in backend .env (from Zoho Campaigns → Mailing Lists → list key), then restart the backend.'
+        });
+      }
     }
 
     const { sendEmail, checkUserEmailConfigured } = require('../services/emailService');
@@ -125,13 +219,35 @@ router.post('/send', async (req, res) => {
       try {
         // Replace variables in subject and body
         const vars = { ...variables, candidateName: recipient.name || variables?.candidateName || 'Candidate' };
+        if (isMarketing) {
+          vars.unsubscribeLink = (process.env.ZOHO_CAMPAIGNS_UNSUBSCRIBE_URL || (process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/unsubscribe` : '') || '#unsubscribe').trim() || '#unsubscribe';
+          const base = (process.env.FRONTEND_URL || '').trim() || '';
+          vars.subscribeLink = base ? `${base.replace(/\/$/, '')}/subscribe` : '#subscribe';
+          if (recipient.email) vars.subscribeLink += `?email=${encodeURIComponent(recipient.email)}`;
+        }
+        const isSubscribeInviteTemplate = template.name === 'Subscribe for Updates' && template.category === 'marketing';
+        // Use EMAIL_LINKS_* for one-click links in emails so they work when clicked (e.g. from phone); fallback to BACKEND/FRONTEND
+        const backendBase = (process.env.EMAIL_LINKS_BACKEND_URL || process.env.BACKEND_URL || process.env.API_URL || '').trim().replace(/\/$/, '');
+        const frontendBase = (process.env.EMAIL_LINKS_FRONTEND_URL || process.env.FRONTEND_URL || '').trim().replace(/\/$/, '');
+        if (isSubscribeInviteTemplate) {
+          if (backendBase && recipient.email) {
+            vars.subscribeLink = `${backendBase}/api/public/subscribe/confirm?email=${encodeURIComponent(recipient.email)}&sig=${signEmail(recipient.email)}`;
+          } else if (!vars.subscribeLink) {
+            const base = (process.env.FRONTEND_URL || '').trim() || '';
+            vars.subscribeLink = base ? `${base.replace(/\/$/, '')}/subscribe` : '#subscribe';
+            if (recipient.email) vars.subscribeLink += `?email=${encodeURIComponent(recipient.email)}`;
+          }
+        }
+        if (isMarketing && recipient.email && backendBase) {
+          vars.unsubscribeLink = `${backendBase}/api/public/unsubscribe/confirm?email=${encodeURIComponent(recipient.email)}&sig=${signEmail(recipient.email)}`;
+        }
         let emailSubject = template.subject;
         let emailBody = template.body;
 
         Object.entries(vars).forEach(([key, val]) => {
           const regex = new RegExp(`{{${key}}}`, 'g');
           emailSubject = emailSubject.replace(regex, val || '');
-          emailBody = emailBody.replace(regex, val || '');
+          emailBody = emailBody.replace(regex, typeof val === 'string' ? val : (val || ''));
         });
 
         // Build professional enterprise HTML email
@@ -143,12 +259,19 @@ router.post('/send', async (req, res) => {
         const bodyLines = emailBody.split('\n');
         let htmlContent = '';
         let inList = false;
+        const isSubscribeInvite = template.name === 'Subscribe for Updates' && template.category === 'marketing';
 
         bodyLines.forEach((line, idx) => {
           const trimmed = line.trim();
           if (!trimmed) {
             if (inList) { htmlContent += '</ul>'; inList = false; }
             htmlContent += '<div style="height: 12px;"></div>';
+          } else if (isSubscribeInvite && /^Subscribe now:\s*(.+)?$/i.test(trimmed)) {
+            // Skip this line; the Subscribe CTA button is added separately
+            if (inList) { htmlContent += '</ul>'; inList = false; }
+          } else if (/unsubscribe|email preferences|click here:\s*#?unsubscribe/i.test(trimmed)) {
+            // Remove unsubscribe line from body (any template)
+            if (inList) { htmlContent += '</ul>'; inList = false; }
           } else if (/^(\d+[\.\)]|[-•●])\s/.test(trimmed)) {
             // Numbered or bulleted list item
             if (!inList) { htmlContent += '<ul style="margin: 8px 0 8px 4px; padding-left: 20px; color: #374151;">'; inList = true; }
@@ -178,38 +301,44 @@ router.post('/send', async (req, res) => {
         // Close sign-off div if opened
         if (htmlContent.includes('border-top: 1px solid #e5e7eb')) htmlContent += '</div>';
 
+        const unsubscribeUrl = (isMarketing && vars.unsubscribeLink && vars.unsubscribeLink !== '#unsubscribe') ? vars.unsubscribeLink : '';
+        const unsubscribeFooterHtml = (unsubscribeUrl && !isSubscribeInvite)
+          ? `<p style="margin: 0 0 8px 0; font-size: 11px;"><a href="${unsubscribeUrl}" style="color: #6366f1; text-decoration: underline;">Unsubscribe</a> or <a href="${unsubscribeUrl}" style="color: #6366f1; text-decoration: underline;">update email preferences</a></p>`
+          : '';
+        const subscribeUrl = (vars.subscribeLink && typeof vars.subscribeLink === 'string' && vars.subscribeLink.startsWith('http')) ? vars.subscribeLink : '';
+        const subscribeCtaHtml = subscribeUrl
+          ? `<div style="margin: 28px 0 24px 0; text-align: center;"><a href="${subscribeUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 16px 32px; background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color: #ffffff !important; text-decoration: none; font-weight: 600; font-size: 15px; border-radius: 10px; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);">Subscribe for updates</a></div>`
+          : '';
+
         const htmlBody = `
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f3f4f6; padding: 32px 16px;">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${emailSubject}</title></head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f8fafc; padding: 40px 20px;">
     <tr><td align="center">
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%;">
-        <!-- Logo / Company Header -->
-        <tr><td style="padding: 0 0 24px 0; text-align: center;">
-          <p style="margin: 0; font-size: 20px; font-weight: 700; color: #312e81; letter-spacing: -0.3px;">Skillnix Recruitment Services</p>
+        <tr><td style="padding: 0 0 28px 0; text-align: center;">
+          <p style="margin: 0; font-size: 22px; font-weight: 700; color: #312e81; letter-spacing: -0.4px;">Skillnix Recruitment Services</p>
+          <div style="width: 48px; height: 3px; background: linear-gradient(90deg, #4f46e5, #7c3aed); margin: 12px auto 0; border-radius: 2px;"></div>
         </td></tr>
-        <!-- Main Card -->
         <tr><td>
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #ffffff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden;">
-            <!-- Accent Bar -->
-            <tr><td style="height: 4px; background: linear-gradient(90deg, #4f46e5, #7c3aed, #4f46e5); font-size: 0; line-height: 0;">&nbsp;</td></tr>
-            <!-- Subject Banner -->
-            <tr><td style="padding: 28px 36px 20px 36px; border-bottom: 1px solid #f3f4f6;">
-              <h1 style="margin: 0; font-size: 18px; font-weight: 700; color: #1f2937; line-height: 1.4;">${emailSubject}</h1>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #ffffff; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.06); overflow: hidden; border: 1px solid #eef2ff;">
+            <tr><td style="height: 5px; background: linear-gradient(90deg, #4f46e5, #7c3aed, #4f46e5); font-size: 0;">&nbsp;</td></tr>
+            <tr><td style="padding: 32px 40px 28px 40px; border-bottom: 1px solid #f1f5f9;">
+              <h1 style="margin: 0; font-size: 20px; font-weight: 700; color: #1e293b; line-height: 1.35;">${emailSubject}</h1>
             </td></tr>
-            <!-- Body Content -->
-            <tr><td style="padding: 28px 36px 32px 36px;">
+            <tr><td style="padding: 32px 40px 36px 40px;">
               ${htmlContent}
+              ${subscribeCtaHtml}
             </td></tr>
           </table>
         </td></tr>
-        <!-- Footer -->
-        <tr><td style="padding: 24px 0 0 0; text-align: center;">
-          <p style="margin: 0 0 4px 0; font-size: 12px; color: #6b7280;">Sent by <strong>${senderName}</strong>${senderEmail ? ' &middot; ' + senderEmail : ''}</p>
-          <p style="margin: 0 0 4px 0; font-size: 11px; color: #9ca3af;">Skillnix Recruitment Services</p>
-          <p style="margin: 0; font-size: 10px; color: #d1d5db;">&copy; ${currentYear} Skillnix. All rights reserved.</p>
+        <tr><td style="padding: 28px 0 0 0; text-align: center;">
+          ${unsubscribeFooterHtml}
+          <p style="margin: 0 0 6px 0; font-size: 12px; color: #64748b;">Sent by <strong>${senderName}</strong>${senderEmail ? ' &middot; ' + senderEmail : ''}</p>
+          <p style="margin: 0 0 6px 0; font-size: 11px; color: #94a3b8;">Skillnix Recruitment Services</p>
+          <p style="margin: 0; font-size: 10px; color: #cbd5e1;">&copy; ${currentYear} Skillnix. All rights reserved.</p>
         </td></tr>
       </table>
     </td></tr>
@@ -224,6 +353,8 @@ router.post('/send', async (req, res) => {
         if (isMarketing) {
           const { sendMarketingEmail } = require('../services/campaignService');
           await sendMarketingEmail(recipient.email, emailSubject, htmlBody, { userId: req.user.id, senderName });
+          // Marketing = add to Zoho list only. Do NOT send via ZeptoMail so it does not use transactional limits.
+          // Recipients get the email when you send a campaign from Zoho Campaigns dashboard to this list.
         } else {
           await sendEmail(recipient.email, emailSubject, htmlBody, emailBody.replace(/<[^>]*>/g, ''), emailOptions);
         }
@@ -231,7 +362,20 @@ router.post('/send', async (req, res) => {
       } catch (err) {
         if (err.code === 'USE_VERIFIED_DOMAIN') throw err;
         console.error('[Send email] Failed for', recipient.email, ':', err.message, err.code || '');
-        results.failed.push({ email: recipient.email, error: err.message });
+        // Prefer displayMessage; never show Zoho's raw "It failed to load one of..." — use our env var names
+        let errMsg = err.displayMessage || err.message;
+        const fromZoho = err.response?.data && (err.response.status === 400 || err.response.status === 401 || err.response.status === 403);
+        const zohoMsg = fromZoho && (typeof err.response.data === 'object' ? (err.response.data.message || err.response.data.error || '') : '');
+        if (err.displayMessage) {
+          errMsg = err.displayMessage;
+        } else if (zohoMsg && /failed to load|client_id|client_secret|refresh_token|list key/i.test(zohoMsg)) {
+          errMsg = 'Zoho Campaigns config error. In backend .env set: ZOHO_CAMPAIGNS_CLIENT_ID, ZOHO_CAMPAIGNS_CLIENT_SECRET, ZOHO_CAMPAIGNS_REFRESH_TOKEN, ZOHO_CAMPAIGNS_LIST_KEY. Restart the backend after changes.';
+        } else if (err.response?.status === 400 && !err.displayMessage) {
+          errMsg = 'Zoho Campaigns returned an error. In backend .env set: ZOHO_CAMPAIGNS_CLIENT_ID, ZOHO_CAMPAIGNS_CLIENT_SECRET, ZOHO_CAMPAIGNS_REFRESH_TOKEN, ZOHO_CAMPAIGNS_LIST_KEY. Restart the backend after changes.';
+        } else if (/request failed with status code/i.test(errMsg) && (err.response?.status === 400 || err.response?.status >= 400)) {
+          errMsg = 'Zoho Campaigns rejected the request. Check ZOHO_CAMPAIGNS_* vars and list key in backend .env, then restart the backend.';
+        }
+        results.failed.push({ email: recipient.email, error: errMsg, displayMessage: err.displayMessage || errMsg });
       }
     }
 
@@ -244,16 +388,56 @@ router.post('/send', async (req, res) => {
     if (err.code === 'USE_VERIFIED_DOMAIN') {
       return res.status(400).json({ success: false, message: err.message, code: 'USE_VERIFIED_DOMAIN' });
     }
+    if (err.code === 'CAMPAIGNS_NOT_CONFIGURED' || err.message === 'CAMPAIGNS_NOT_CONFIGURED') {
+      return res.status(400).json({
+        success: false,
+        message: err.message,
+        code: 'CAMPAIGNS_NOT_CONFIGURED',
+        displayMessage: err.displayMessage || 'Zoho Campaigns is not configured. Add OAuth credentials (or API key) and ZOHO_CAMPAIGNS_LIST_KEY in backend .env.'
+      });
+    }
     console.error('[Send email] Template send error:', err.message, err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: err.message, displayMessage: err.displayMessage });
   }
 });
 
-// ─── SEED default templates (called once) ───
+// ─── SEED default templates (called once, or to add missing marketing template) ───
 router.post('/seed-defaults', async (req, res) => {
   try {
     const existing = await EmailTemplate.countDocuments({ isDefault: true });
-    if (existing > 0) return res.json({ success: true, message: 'Default templates already exist', count: existing });
+    const subscribeTemplate = {
+      name: 'Subscribe for Updates',
+      category: 'marketing',
+      subject: 'Stay ahead with {{company}} – Job alerts and updates',
+      body: `Dear {{candidateName}},
+
+Thank you for your interest in {{company}}. We would like to keep you informed with relevant opportunities and updates.
+
+What you'll receive when you subscribe:
+
+• Curated job alerts matched to your skills and preferences
+• Early notice of hiring drives and new openings from our partner companies
+• Occasional industry insights and career tips from our HR team
+
+Click the button below to subscribe. You will then be added to our mailing list and will receive future updates via email.
+
+Subscribe now: {{subscribeLink}}
+
+Best regards,
+Skillnix Recruitment Services`,
+      variables: ['candidateName', 'company', 'subscribeLink'],
+      isDefault: true,
+      createdBy: req.user.id
+    };
+
+    if (existing > 0) {
+      await EmailTemplate.findOneAndUpdate(
+        { name: 'Subscribe for Updates', category: 'marketing' },
+        { $setOnInsert: subscribeTemplate },
+        { upsert: true }
+      );
+      return res.json({ success: true, message: 'Default templates already exist; marketing template ensured', count: existing });
+    }
 
     const defaults = [
       {
@@ -379,6 +563,30 @@ Best regards,
 HR Team
 Skillnix Recruitment Services`,
         variables: ['candidateName', 'position', 'company', 'date', 'time', 'venue'],
+        isDefault: true,
+        createdBy: req.user.id
+      },
+      {
+        name: 'Subscribe for Updates',
+        category: 'marketing',
+        subject: 'Stay ahead with {{company}} – Job alerts and updates',
+        body: `Dear {{candidateName}},
+
+Thank you for your interest in {{company}}. We would like to keep you informed with relevant opportunities and updates.
+
+What you'll receive when you subscribe:
+
+• Curated job alerts matched to your skills and preferences
+• Early notice of hiring drives and new openings from our partner companies
+• Occasional industry insights and career tips from our HR team
+
+Click the button below to subscribe. You will then be added to our mailing list and will receive future updates via email.
+
+Subscribe now: {{subscribeLink}}
+
+Best regards,
+Skillnix Recruitment Services`,
+        variables: ['candidateName', 'company', 'subscribeLink'],
         isDefault: true,
         createdBy: req.user.id
       }

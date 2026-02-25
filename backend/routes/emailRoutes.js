@@ -339,7 +339,7 @@ router.post('/send-marketing', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'CAMPAIGNS_NOT_CONFIGURED',
-        displayMessage: 'Zoho Campaigns is not configured. Add ZOHO_CAMPAIGNS_API_KEY to server settings.'
+        displayMessage: 'Zoho Campaigns is not configured. Add ZOHO_CAMPAIGNS_CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN (or ZOHO_CAMPAIGNS_API_KEY) and ZOHO_CAMPAIGNS_LIST_KEY to backend .env.'
       });
     }
 
@@ -358,7 +358,13 @@ router.post('/send-marketing', async (req, res) => {
     res.json({ success: true, message: `Marketing email queued to ${result.sent} recipient(s)`, data: result.data });
   } catch (error) {
     console.error('Marketing email error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to send marketing email' });
+    const displayMessage = error.displayMessage || (error.code === 'CAMPAIGNS_NOT_CONFIGURED' ? 'Add ZOHO_CAMPAIGNS_LIST_KEY in backend .env (from Zoho Campaigns → Mailing Lists → list key).' : null);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to send marketing email',
+      code: error.code,
+      displayMessage
+    });
   }
 });
 

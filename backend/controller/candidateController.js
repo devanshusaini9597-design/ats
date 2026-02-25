@@ -2078,7 +2078,23 @@ exports.createCandidate = async (req, res) => {
             req.body.statusHistory = JSON.parse(req.body.statusHistory);
         }
         if (req.file) {
-            req.body.resume = `/uploads/${req.file.filename}`;
+            const s3Service = require('../services/s3Service');
+            const path = require('path');
+            const fs = require('fs');
+            const filePath = (req.file.path && fs.existsSync(req.file.path))
+                ? req.file.path
+                : (fs.existsSync(path.join(process.cwd(), 'uploads', req.file.filename))
+                    ? path.join(process.cwd(), 'uploads', req.file.filename)
+                    : path.join(__dirname, '..', 'uploads', req.file.filename));
+            console.log('[Resume] Saving resume — storage: S3 if configured, else local');
+            const uploaded = s3Service.uploadResumeFromFile(filePath, req.file.originalname);
+            if (uploaded && uploaded.key) {
+                req.body.resume = uploaded.key;
+                console.log('[Resume] ✅ Stored in S3 — bucket:', process.env.S3_BUCKET_NAME, ', folder: resumes/, key:', uploaded.key);
+            } else {
+                req.body.resume = `/uploads/${req.file.filename}`;
+                console.log('[Resume] Stored locally (S3 not used) — path: uploads/' + req.file.filename);
+            }
         }
 
         // ✅ Auto-detect state from location if not provided
@@ -2204,7 +2220,25 @@ exports.updateCandidate = async (req, res) => {
             try { req.body.statusHistory = JSON.parse(req.body.statusHistory); } 
             catch (e) { req.body.statusHistory = []; }
         }
-        if (req.file) { req.body.resume = `/uploads/${req.file.filename}`; }
+        if (req.file) {
+            const s3Service = require('../services/s3Service');
+            const path = require('path');
+            const fs = require('fs');
+            const filePath = (req.file.path && fs.existsSync(req.file.path))
+                ? req.file.path
+                : (fs.existsSync(path.join(process.cwd(), 'uploads', req.file.filename))
+                    ? path.join(process.cwd(), 'uploads', req.file.filename)
+                    : path.join(__dirname, '..', 'uploads', req.file.filename));
+            console.log('[Resume] Saving resume (update) — storage: S3 if configured, else local');
+            const uploaded = s3Service.uploadResumeFromFile(filePath, req.file.originalname);
+            if (uploaded && uploaded.key) {
+                req.body.resume = uploaded.key;
+                console.log('[Resume] ✅ Stored in S3 — bucket:', process.env.S3_BUCKET_NAME, ', folder: resumes/, key:', uploaded.key);
+            } else {
+                req.body.resume = `/uploads/${req.file.filename}`;
+                console.log('[Resume] Stored locally (S3 not used) — path: uploads/' + req.file.filename);
+            }
+        }
 
         // ✅ Auto-detect state from location if location is being updated
         if (req.body.location && !req.body.state) {

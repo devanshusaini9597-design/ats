@@ -29,6 +29,7 @@ const VARIABLE_OPTIONS = [
   { key: 'time', label: 'Time', example: '10:00 AM', isTime: true },
   { key: 'venue', label: 'Venue / Address', example: 'Shyampur, Rishikesh' },
   { key: 'spoc', label: 'SPOC Name', example: 'Mr. XYZ' },
+  { key: 'subscribeLink', label: 'Subscribe URL (Marketing)', example: 'https://yoursite.com/subscribe' },
   { key: 'unsubscribeLink', label: 'Unsubscribe Link (Marketing)', example: '#unsubscribe' },
 ];
 
@@ -577,8 +578,22 @@ const EmailTemplatesPage = () => {
                 {/* Body */}
                 <div className="p-6 bg-white">
                   <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
-                    {renderPreviewText(previewTemplate.body)}
+                    {previewTemplate.name === 'Subscribe for Updates' && previewTemplate.category === 'marketing'
+                      ? renderPreviewText(previewTemplate.body.replace(/\n?Subscribe now:\s*\{\{subscribeLink\}\}\s*\n?/gi, '\n'))
+                      : renderPreviewText(previewTemplate.body)}
                   </div>
+                  {previewTemplate.name === 'Subscribe for Updates' && previewTemplate.category === 'marketing' && (
+                    <div className="mt-5 text-center">
+                      <a
+                        href={previewVars.subscribeLink && previewVars.subscribeLink.startsWith('http') ? previewVars.subscribeLink : '#'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity"
+                      >
+                        Subscribe for updates
+                      </a>
+                    </div>
+                  )}
                 </div>
                 {/* Footer */}
                 <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 text-center">

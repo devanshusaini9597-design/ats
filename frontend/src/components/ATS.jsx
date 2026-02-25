@@ -1341,7 +1341,7 @@ const handleDelete = (id) => {
       if (chData.success && chData.channels) {
         setChannelsAvailable({
           transactional: chData.channels.transactional?.available ?? true,
-          marketing: false
+          marketing: chData.channels.marketing?.available ?? false
         });
       }
     } catch (_) { /* keep defaults */ }
@@ -1439,11 +1439,13 @@ const handleDelete = (id) => {
           setSelectedIds([]);
         } else {
           if (failedCount > 0) {
-            const errMsg = data.data?.failed?.[0]?.error || 'Send failed';
-            toast.error(`Email not sent: ${errMsg}`);
+            const first = data.data?.failed?.[0];
+            const errMsg = first?.displayMessage || first?.error || 'Send failed';
+            toast.error(`Email not sent: ${errMsg}`, 8000);
             console.error('[Send email] Failed:', data.data?.failed);
           } else {
-            toast.success(`Email sent to ${emailRecipient.email}`);
+            const via = emailChannel === 'marketing' ? ' (via Marketing)' : ' (via Transactional)';
+            toast.success(`Email sent to ${emailRecipient.email}${via}`);
             setShowEmailModal(false);
             setEmailRecipient(null);
           }
@@ -1454,13 +1456,16 @@ const handleDelete = (id) => {
         console.error('[Send email] Not configured:', data);
         toast.error('Please configure your email settings first. Go to Email → Email Settings.', 6000);
         setShowEmailModal(false);
+      } else if (data.code === 'CAMPAIGNS_NOT_CONFIGURED') {
+        toast.error(data.displayMessage || data.message || 'Zoho Campaigns is not configured. Add credentials and ZOHO_CAMPAIGNS_LIST_KEY in backend .env.', 8000);
+        setShowEmailModal(false);
       } else if (data.code === 'USE_VERIFIED_DOMAIN') {
         setVerifiedEmailRequiredMessage(data.message || 'Please use your company verified email to send.');
         setShowVerifiedEmailRequiredModal(true);
         setShowEmailModal(false);
       } else {
         console.error('[Send email] API error:', data.message, data);
-        toast.error(`Failed: ${data.message}`);
+        toast.error(data.displayMessage || data.message || 'Failed to send email', 6000);
       }
     } catch (err) {
       console.error('[Send email] Error:', err?.message, err);
